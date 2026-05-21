@@ -89,10 +89,10 @@
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
 
-//#define USE_SERIAL_DEBUG
+#define USE_SERIAL_DEBUG
 
 //Profiling load for cpuTask (IO14) & loop (IO2); SD access is exclusive.
-//#define USE_SIGNAL_DEBUG
+#define USE_SIGNAL_DEBUG
 
 #define USE_FDC
 
@@ -903,7 +903,7 @@ uint8_t readFDCData() {
         fdc_intrq = true;
       }
     } else {
-        fdc.Status |= 0x02;
+      fdc.Status |= 0x02;
     }
     return val;
   }
@@ -1777,16 +1777,16 @@ void detectMapper(const char* filename, uint32_t size) {
 }
 
 //M1WAIT is closer to the original hardware behavior and results in a lower CPU load.
-#define CPU_CYCLE_M1WAIT 205
+#define CPU_CYCLE_M1WAIT 210 // -8%
+//#define CPU_CYCLE_M1WAIT 215 // -6%
 #define CPU_CYCLE_NOWAIT 228
 
 void IRAM_ATTR cpuTask(void* pvParameters) {
   const int64_t frameTimeUs = 16684;  // NTSC 59.94FPS
   int64_t nextFrameTime = esp_timer_get_time();
   int64_t now;
-  ;
   int64_t waitTime;
-
+  
   while (1) {
     if (isPaused) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -1804,9 +1804,10 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       if (i == 192) {
         tms9918a_rasterize(vdp);
         frameReady = true;
-      }
-      if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
-        IntZ80(&cpu, 0x38);
+        // Vblank開始時点でのみIRQ判定（毎サイクルから削減）
+        if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
+          IntZ80(&cpu, 0x38);
+        }
       }
     }
 #ifdef USE_SIGNAL_DEBUG
@@ -1815,15 +1816,22 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     now = esp_timer_get_time();
     waitTime = nextFrameTime - now;
 
-    if (waitTime > 0) {
+    if (waitTime > 500) {
+      // 待機時間が500us以上の場合のみvTaskDelayを使用
       if (waitTime >= 1000) {
-        vTaskDelay(pdMS_TO_TICKS(waitTime / 1000));
+        vTaskDelay(pdMS_TO_TICKS((waitTime - 500) / 1000));
       }
+      // 残りはbusy-wait
       while (esp_timer_get_time() < nextFrameTime) {
         asm volatile("nop");
       }
-    }     
-#ifdef USE_SERIAL_DEBUG     
+    } else if (waitTime > 0) {
+      // 短い待機はbusy-waitのみ
+      while (esp_timer_get_time() < nextFrameTime) {
+        asm volatile("nop");
+      }
+    }
+#ifdef USE_SERIAL_DEBUG
     else {
       //'x' appears when the frame timing exceeds 16.67ms.
       Serial.printf("x");
@@ -2047,7 +2055,7 @@ void setup() {
   cpu.IPeriod = 512;
   cpu.SPtr.W = 0xF380;
   cpu.AF.B.h = 0x00;
-  xTaskCreatePinnedToCore(cpuTask, "cpuTask", 4096, NULL, 24, NULL, 0);
+  xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
 
   Serial.println("MSX Booting with Dual Core...");
 
@@ -2118,9 +2126,7 @@ void loop() {
       msxBitmap->data = vdp->visible_raster;
       canvas->drawBitmap(48, 0, msxBitmap);
     }
-    updateAllSound();
     DisplayController.processPrimitives();
-
     updateAllSound();
     updateController();
     updateKeyboard();
@@ -2130,8 +2136,9 @@ void loop() {
 #ifdef USE_SIGNAL_DEBUG
     digitalWrite(2, LOW);
 #endif
+  } else {
+    updateAllSound();
   }
-  updateAllSound();
 
   if (isPaused) {
     vTaskDelay(pdMS_TO_TICKS(5));
