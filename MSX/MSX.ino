@@ -89,10 +89,10 @@
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
 
-#define USE_SERIAL_DEBUG
+//#define USE_SERIAL_DEBUG
 
 //Profiling load for cpuTask (IO14) & loop (IO2); SD access is exclusive.
-#define USE_SIGNAL_DEBUG
+//#define USE_SIGNAL_DEBUG
 
 #define USE_FDC
 
@@ -1786,6 +1786,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   int64_t nextFrameTime = esp_timer_get_time();
   int64_t now;
   int64_t waitTime;
+  bool irq_line_status = false;
   
   while (1) {
     if (isPaused) {
@@ -1804,10 +1805,9 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       if (i == 192) {
         tms9918a_rasterize(vdp);
         frameReady = true;
-        // Vblank開始時点でのみIRQ判定（毎サイクルから削減）
-        if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
-          IntZ80(&cpu, 0x38);
-        }
+      }
+      if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
+        IntZ80(&cpu, 0x38);
       }
     }
 #ifdef USE_SIGNAL_DEBUG
@@ -1816,17 +1816,10 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     now = esp_timer_get_time();
     waitTime = nextFrameTime - now;
 
-    if (waitTime > 500) {
-      // 待機時間が500us以上の場合のみvTaskDelayを使用
+    if (waitTime > 0) {
       if (waitTime >= 1000) {
-        vTaskDelay(pdMS_TO_TICKS((waitTime - 500) / 1000));
+        vTaskDelay(pdMS_TO_TICKS(waitTime / 1000));
       }
-      // 残りはbusy-wait
-      while (esp_timer_get_time() < nextFrameTime) {
-        asm volatile("nop");
-      }
-    } else if (waitTime > 0) {
-      // 短い待機はbusy-waitのみ
       while (esp_timer_get_time() < nextFrameTime) {
         asm volatile("nop");
       }
@@ -2126,7 +2119,9 @@ void loop() {
       msxBitmap->data = vdp->visible_raster;
       canvas->drawBitmap(48, 0, msxBitmap);
     }
+    updateAllSound();
     DisplayController.processPrimitives();
+
     updateAllSound();
     updateController();
     updateKeyboard();
@@ -2136,9 +2131,8 @@ void loop() {
 #ifdef USE_SIGNAL_DEBUG
     digitalWrite(2, LOW);
 #endif
-  } else {
-    updateAllSound();
   }
+  updateAllSound();
 
   if (isPaused) {
     vTaskDelay(pdMS_TO_TICKS(5));

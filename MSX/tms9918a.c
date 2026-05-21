@@ -168,7 +168,7 @@ static IRAM_ATTR void tms9918a_render_sprite(struct tms9918a *vdp, int y, uint8_
 	tms9918a_render_slice(vdp, y, sprat, bits, width);
 }
 
-void IRAM_ATTR prepare_sprites(struct tms9918a *vdp) {
+void prepare_sprites(struct tms9918a *vdp) {
 	memset(vdp->sprite_line_count, 0, 192);
 	uint8_t *sprat = vdp->framebuffer + ((vdp->reg[5] & 0x7F) << 7);
 	int spheight = vdp->reg[1] & 0x02 ? 16 : 8;
@@ -452,7 +452,7 @@ struct tms9918a *tms9918a_create(void) {
 	return vdp;
 }
 
-int IRAM_ATTR tms9918a_irq_pending(struct tms9918a *vdp) {
+int tms9918a_irq_pending(struct tms9918a *vdp) {
 	if (vdp->reg[1] & 0x20)
 		return vdp->status & 0x80;
 	return 0;
