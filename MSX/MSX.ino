@@ -1321,13 +1321,14 @@ void syncPSRAMtoGame(int idx) {
   uint8_t* tmp_active_raster = vdp->active_raster;
   uint8_t* tmp_visible_raster = vdp->visible_raster;
   uint32_t* tmp_colourmap = vdp->colourmap;
+
+  memcpy(vdp, p, VDP_SAVE_SIZE);
+  p += VDP_SAVE_SIZE;
+  
   vdp->framebuffer = tmp_framebuffer;
   vdp->active_raster = tmp_active_raster;
   vdp->visible_raster = tmp_visible_raster;
   vdp->colourmap = tmp_colourmap;
-
-  memcpy(vdp, p, VDP_SAVE_SIZE);
-  p += VDP_SAVE_SIZE;
 
   memcpy((void*)psg_regs, p, 16);
   p += 16;
