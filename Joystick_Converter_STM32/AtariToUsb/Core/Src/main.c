@@ -120,7 +120,7 @@ int main(void)
               if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 4);
           }
           if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET) {
-              if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 5);
+              if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) != GPIO_PIN_RESET || !rapid_st) data &= ~(1 << 5);
           }
           if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET) {
               if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 6);
@@ -139,7 +139,7 @@ int main(void)
               if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 4);
           }
           if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6) == GPIO_PIN_RESET) {
-              if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 5);
+              if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) != GPIO_PIN_RESET || !rapid_st) data &= ~(1 << 5);
           }
           if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_RESET) {
               if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 6);
