@@ -28,7 +28,7 @@ struct tms9918a {
   uint8_t *framebuffer;   // ポインタなので退避が必要
   uint8_t *active_raster; // ポインタなので退避が必要
   uint8_t *visible_raster;// ポインタなので退避が必要
-  uint32_t *colourmap;    // ポインタなので退避が必要
+  uint8_t colourmap[16];  // RGB222 palette (00BBGGRR), initialized from msx_palette
 
   // 巨大な実体バッファ（保存対象から外したい）
   uint8_t rasterbuffer0[256 * 192]; 

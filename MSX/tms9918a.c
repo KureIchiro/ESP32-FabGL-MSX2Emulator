@@ -47,14 +47,9 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 	int x = sprat[1];
 	if (sprat[3] & 0x80) x -= 32;
 
-	// 拡大フラグの取得
 	int mag = vdp->reg[1] & 0x01;
-	// 拡大時は描画幅が2倍になる
 	int real_width = mag ? (width << 1) : width;
-
-	// 画面外の完全なクリッピング
-
-	uint8_t foreground = sprat[3] & 0x0F;
+	uint8_t foreground = vdp->colourmap[sprat[3] & 0x0F];
 
 	if (width == 8) bits &= 0xFF00;
 	uint8_t *out = &vdp->active_raster[256 * y];
@@ -66,75 +61,54 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 			if (nibble == 0) continue;
 
 			if (target_x >= 0 && target_x <= 252) {
-				// 4ピクセル一括（余計な if(out==0) は入れない！）
 				if (nibble == 0x0F) {
-					out[target_x + 0] = foreground;
-					out[target_x + 1] = foreground;
-					out[target_x + 2] = foreground;
-					out[target_x + 3] = foreground;
+					out[(target_x + 0) ^ 2] = foreground;
+					out[(target_x + 1) ^ 2] = foreground;
+					out[(target_x + 2) ^ 2] = foreground;
+					out[(target_x + 3) ^ 2] = foreground;
 				} else {
 					for (int b = 0; b < 4; b++) {
-						if ((nibble >> (3 - b)) & 1) out[target_x + b] = foreground;
+						if ((nibble >> (3 - b)) & 1) out[(target_x + b) ^ 2] = foreground;
 					}
 				}
 			} else {
-				// 画面端
 				for (int b = 0; b < 4; b++) {
 					if ((nibble >> (3 - b)) & 1) {
 						int tx = target_x + b;
-						if (tx >= 0 && tx < 256) out[tx] = foreground;
+						if (tx >= 0 && tx < 256) out[tx ^ 2] = foreground;
 					}
 				}
 			}
 		}
 	} else {
 		// --- Magnify（2倍拡大）モード ---
-		// widthが8(拡大後16px)なら4回、16(拡大後32px)なら8回ループ
 		for (int i = 0; i < (int)width; i += 2) {
-			// 拡大モードは1ビットを2ピクセルに広げるため、 target_x は i*2 で進む
 			int target_x = x + (i * 2);
-
-			// bits(16bit)のうち、左から2ビットずつ取り出す
-			// i=0: >>14, i=2: >>12, i=4: >>10... とシフトしていく
 			uint8_t two_bits = (uint8_t)((bits >> (14 - i)) & 0x03);
 
 			if (two_bits == 0) continue;
 
-			// 中央描画（高速化エリア：x=0〜252、かつ拡大後幅16px〜32pxが収まる範囲）
-			// 拡大後の最大幅は32pxなので、target_x + 31 までが画面内にあるかを判定
-			// ここでは安全を見て以前の 252 判定を使いつつ、4ピクセル単位で処理
 			if (target_x >= 0 && target_x <= (256 - 4)) {
-
 				if (two_bits == 0x03) {
-					// ★ 2ビットとも立っている（＝拡大後4ピクセル連続塗り）
-					// 逆順描画なので、if(out==0) の判定なしで無条件上書き！
-					uint8_t *p = out + target_x;
-					p[0] = foreground;
-					p[1] = foreground;
-					p[2] = foreground;
-					p[3] = foreground;
+					out[(target_x + 0) ^ 2] = foreground;
+					out[(target_x + 1) ^ 2] = foreground;
+					out[(target_x + 2) ^ 2] = foreground;
+					out[(target_x + 3) ^ 2] = foreground;
 				} else {
-					// 透明が混ざっている時は2ピクセル単位（元の1ビット分）で判定
-					// これも上書きで背景を保護
 					for (int b = 0; b < 2; b++) {
 						if ((two_bits >> (1 - b)) & 1) {
 							int tx = target_x + (b * 2);
-							// 拡大なので2ピクセル連続で塗る
-							out[tx] = foreground;
-							out[tx + 1] = foreground;
+							out[tx ^ 2] = foreground;
+							out[(tx + 1) ^ 2] = foreground;
 						}
 					}
 				}
 			} else {
-				// 境界付近（画面端）の安全な描画
-				// 1ピクセルごとに画面内（0〜255）かをチェックして塗る
 				for (int b = 0; b < 2; b++) {
 					if ((two_bits >> (1 - b)) & 1) {
 						int tx = target_x + (b * 2);
-						// 左側のピクセル
-						if (tx >= 0 && tx < 256) out[tx] = foreground;
-						// 右側のピクセル（拡大により生まれたピクセル）
-						if (tx + 1 >= 0 && tx + 1 < 256) out[tx + 1] = foreground;
+						if (tx >= 0 && tx < 256) out[tx ^ 2] = foreground;
+						if (tx + 1 >= 0 && tx + 1 < 256) out[(tx + 1) ^ 2] = foreground;
 					}
 				}
 			}
@@ -244,11 +218,10 @@ static void IRAM_ATTR tms9918a_rasterize_g1(struct tms9918a *vdp) {
 				uint8_t code = *p_line++;
 				uint8_t b = pattern[(code << 3) + scanline];
 				uint8_t c = colour[code >> 3];
-				uint8_t c_arr[2] = { c & 0x0F, c >> 4 };
+				uint8_t c_arr[2] = { vdp->colourmap[c & 0x0F], vdp->colourmap[c >> 4] };
 
-				// 分岐なし！4ピクセルずつ32bitでメモリに叩き込む
-				*((uint32_t *)out) = c_arr[(b >> 7) & 1] | (c_arr[(b >> 6) & 1] << 8) | (c_arr[(b >> 5) & 1] << 16) | (c_arr[(b >> 4) & 1] << 24);
-				*((uint32_t *)(out + 4)) = c_arr[(b >> 3) & 1] | (c_arr[(b >> 2) & 1] << 8) | (c_arr[(b >> 1) & 1] << 16) | (c_arr[b & 1] << 24);
+				*((uint32_t *)out) = c_arr[(b >> 5) & 1] | (c_arr[(b >> 4) & 1] << 8) | (c_arr[(b >> 7) & 1] << 16) | (c_arr[(b >> 6) & 1] << 24);
+				*((uint32_t *)(out + 4)) = c_arr[(b >> 1) & 1] | (c_arr[b & 1] << 8) | (c_arr[(b >> 3) & 1] << 16) | (c_arr[(b >> 2) & 1] << 24);
 				out += 8;
 			}
 		}
@@ -282,11 +255,10 @@ static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 				uint8_t code = *p_line++;
 				uint8_t b = pattern[(code << 3) + scanline];
 				uint8_t c = colour[(code << 3) + scanline];
-				uint8_t c_arr[2] = { c & 0x0F, c >> 4 };
+				uint8_t c_arr[2] = { vdp->colourmap[c & 0x0F], vdp->colourmap[c >> 4] };
 
-				// 分岐排除＆32bitシーケンシャル書き込み
-				*((uint32_t *)out) = c_arr[(b >> 7) & 1] | (c_arr[(b >> 6) & 1] << 8) | (c_arr[(b >> 5) & 1] << 16) | (c_arr[(b >> 4) & 1] << 24);
-				*((uint32_t *)(out + 4)) = c_arr[(b >> 3) & 1] | (c_arr[(b >> 2) & 1] << 8) | (c_arr[(b >> 1) & 1] << 16) | (c_arr[b & 1] << 24);
+				*((uint32_t *)out) = c_arr[(b >> 5) & 1] | (c_arr[(b >> 4) & 1] << 8) | (c_arr[(b >> 7) & 1] << 16) | (c_arr[(b >> 6) & 1] << 24);
+				*((uint32_t *)(out + 4)) = c_arr[(b >> 1) & 1] | (c_arr[b & 1] << 8) | (c_arr[(b >> 3) & 1] << 16) | (c_arr[(b >> 2) & 1] << 24);
 				out += 8;
 			}
 		}
@@ -309,7 +281,7 @@ static void IRAM_ATTR tms9918a_rasterize_mc(struct tms9918a *vdp) {
 			for (int x = 0; x < 32; x++) {
 				uint8_t code = *p_line++;
 				uint8_t c = pattern[(code << 3) + pat_offset + block_y];
-				uint8_t c_arr[2] = { c >> 4, c & 0x0F };
+				uint8_t c_arr[2] = { vdp->colourmap[c >> 4], vdp->colourmap[c & 0x0F] };
 
 				uint32_t p1 = c_arr[0] | (c_arr[0] << 8) | (c_arr[0] << 16) | (c_arr[0] << 24);
 				uint32_t p2 = c_arr[1] | (c_arr[1] << 8) | (c_arr[1] << 16) | (c_arr[1] << 24);
@@ -327,31 +299,34 @@ static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
 	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
 	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
 	uint8_t *out = vdp->active_raster;
-	uint8_t bg = vdp->reg[7] & 0x0F;
-	uint8_t fg = vdp->reg[7] >> 4;
+	uint8_t bg = vdp->colourmap[vdp->reg[7] & 0x0F];
+	uint8_t fg = vdp->colourmap[vdp->reg[7] >> 4];
 	uint8_t c_arr[2] = { bg, fg };
 	uint32_t bg_block = bg | (bg << 8) | (bg << 16) | (bg << 24);
 
 	for (int char_row = 0; char_row < 24; char_row++) {
 		for (int scanline = 0; scanline < 8; scanline++) {
 			uint8_t *p_line = p_base + char_row * 40;
+			uint8_t *line_start = out;
 
-			// Left Border (8px)
+			// Left Border (8px) - 32bitベタ塗りはスワップ不要
 			*((uint32_t *)out) = bg_block;
 			out += 4;
 			*((uint32_t *)out) = bg_block;
 			out += 4;
 
+			int out_idx = 8;
 			for (int x = 0; x < 40; x++) {
 				uint8_t code = *p_line++;
 				uint8_t b = pattern[(code << 3) + scanline];
-				*out++ = c_arr[(b >> 7) & 1];
-				*out++ = c_arr[(b >> 6) & 1];
-				*out++ = c_arr[(b >> 5) & 1];
-				*out++ = c_arr[(b >> 4) & 1];
-				*out++ = c_arr[(b >> 3) & 1];
-				*out++ = c_arr[(b >> 2) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 7) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 6) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 5) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 4) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 3) & 1];
+				line_start[out_idx++ ^ 2] = c_arr[(b >> 2) & 1];
 			}
+			out += 240;
 
 			// Right Border (8px)
 			*((uint32_t *)out) = bg_block;
@@ -367,15 +342,16 @@ void IRAM_ATTR tms9918a_rasterize(struct tms9918a *vdp) {
 	unsigned int mode = (vdp->reg[1] >> 2) & 0x06;
 	mode |= (vdp->reg[0] & 0x02) >> 1;
 
+	uint8_t backdrop = vdp->colourmap[vdp->reg[7] & 0x0F];
 	if ((vdp->reg[1] & 0x40) == 0)
-		memset(vdp->active_raster, 0, sizeof(vdp->active_raster));  // 画面OFF時
+		memset(vdp->active_raster, backdrop, 256 * 192);  // 画面OFF時：バックドロップ色で塗る
 	else {
 		switch (mode) {
 			case 0: tms9918a_rasterize_g1(vdp); break;
 			case 1: tms9918a_rasterize_g2(vdp); break;
 			case 2: tms9918a_rasterize_mc(vdp); break;
 			case 4: tms9918a_rasterize_text(vdp); break;
-			default: memset(vdp->active_raster, 0, sizeof(vdp->active_raster));
+			default: memset(vdp->active_raster, backdrop, 256 * 192);
 		}
 	}
 	// if (vdp->trace)

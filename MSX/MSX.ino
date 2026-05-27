@@ -89,10 +89,10 @@
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
 
-//#define USE_SERIAL_DEBUG
+#define USE_SERIAL_DEBUG
 
 //Profiling load for cpuTask (IO14) & loop (IO2); SD access is exclusive.
-//#define USE_SIGNAL_DEBUG
+#define USE_SIGNAL_DEBUG
 
 #define USE_FDC
 
@@ -162,9 +162,7 @@ enum MapperType { MAPPER_NONE,
                   MAPPER_RTYPE };
 MapperType currentMapper = MAPPER_NONE;
 
-fabgl::VGA16Controller DisplayController;
-fabgl::Canvas* canvas;
-fabgl::Bitmap* msxBitmap;
+fabgl::VGADirectController DisplayController;
 fabgl::SoundGenerator soundGenerator;
 fabgl::NoiseWaveformGenerator noiseGen;
 fabgl::Mouse Mouse;
@@ -288,7 +286,7 @@ uint8_t slot_reg = 0;
 struct tms9918a* vdp;
 volatile bool frameReady = false;
 bool displayEnabled = true;
-//V9938 color
+//V9938 color (RGB888, used to compute RGB222 colourmap)
 static const fabgl::RGB888 msx_palette[16] = {
   { 0x00, 0x00, 0x00 },  // 0: Transparent (Black)
   { 0x00, 0x00, 0x00 },  // 1: Black
@@ -305,8 +303,89 @@ static const fabgl::RGB888 msx_palette[16] = {
   { 0x22, 0x88, 0x22 },  // 12: Dark Green
   { 0xDD, 0x44, 0xAA },  // 13: Magenta
   { 0xAA, 0xAA, 0xAA },  // 14: Gray
-  { 0xFF, 0xFF, 0xFFF }  // 15: White
+  { 0xFF, 0xFF, 0xFF }   // 15: White
 };
+
+// --- UI / VGADirectController infrastructure ---
+static uint8_t* uiBuffer = nullptr;  // 320x200 PSRAM software-render buffer (RGB222)
+enum class DisplayMode : uint8_t { UI, GAME };
+static volatile DisplayMode displayMode = DisplayMode::UI;
+
+// VGA native pixel constants: bit7=VSync, bit6=HSync, bit5-0=BBGGRR
+// Active video bytes must have bit7=1 and bit6=1 (sync inactive = HIGH)
+// so the base is 0xC0; color bits (00BBGGRR) are OR'd in.
+static constexpr uint8_t UI_BLACK = 0xC0;  // 0xC0 | 0x00
+static constexpr uint8_t UI_WHITE = 0xFF;  // 0xC0 | 0x3F
+static constexpr uint8_t UI_BLUE = 0xF0;   // 0xC0 | 0x30  dark blue background
+static constexpr uint8_t UI_CYAN = 0xFD;   // 0xC0 | 0x3D  selected item highlight
+static constexpr uint8_t UI_GRAY = 0xEA;   // 0xC0 | 0x2A
+
+namespace fabgl { extern const FontInfo FONT_8x8; }
+
+static void uiFillRect(int x1, int y1, int x2, int y2, uint8_t col) {
+  if (!uiBuffer) return;
+  for (int y = y1; y <= y2 && y < 200; y++) {
+    if (y < 0) continue;
+    uint8_t* row = uiBuffer + y * 320;
+    for (int x = x1; x <= x2 && x < 320; x++) {
+      if (x >= 0) row[x ^ 2] = col;
+    }
+  }
+}
+
+static void uiDrawChar(int x, int y, char ch, uint8_t fg, uint8_t bg) {
+  if (!uiBuffer) return;
+  const fabgl::FontInfo* f = &fabgl::FONT_8x8;
+  uint8_t c = (uint8_t)ch;
+  if (c < 32 || c > 127) c = '?';
+  uint8_t charIdx = c;
+  const uint8_t* glyph;
+  if (f->chptr) {
+    glyph = f->data + pgm_read_dword(f->chptr + charIdx);
+  } else {
+    glyph = f->data + charIdx * f->height;
+  }
+  for (int row = 0; row < f->height; row++) {
+    if (y + row < 0 || y + row >= 200) continue;
+    uint8_t bits = pgm_read_byte(glyph + row);
+
+    // 行の先頭アドレスを取得
+    uint8_t* dst_row = uiBuffer + (y + row) * 320;
+
+    for (int col = 0; col < f->width; col++) {
+      int abs_x = x + col;  // 画面上の絶対X座標を計算
+      if (abs_x < 0 || abs_x >= 320) continue;
+
+      // 絶対X座標に対して ^ 2 を適用して書き込む
+      dst_row[abs_x ^ 2] = (bits & (0x80 >> col)) ? fg : bg;
+    }
+  }
+}
+
+static void uiText(int x, int y, const char* s, uint8_t fg, uint8_t bg) {
+  while (s && *s) {
+    uiDrawChar(x, y, *s++, fg, bg);
+    x += 8;
+  }
+}
+
+static void IRAM_ATTR vgaScanlineCallback(void* arg, uint8_t* dest, int scanLine) {
+  if (displayMode == DisplayMode::GAME && vdp) {
+    if (scanLine < 192) {
+      memset(dest, UI_BLACK, 48);
+      memcpy(dest + 48, vdp->visible_raster + scanLine * 256, 256);
+      memset(dest + 304, UI_BLACK, 16);
+    } else {
+      memcpy(dest, uiBuffer + scanLine * 320, 320);
+    }
+  } else {
+    if (uiBuffer) {
+      memcpy(dest, uiBuffer + scanLine * 320, 320);
+    } else {
+      memset(dest, UI_BLACK, 320);
+    }
+  }
+}
 
 class SCCGenerator : public fabgl::WaveformGenerator {
 private:
@@ -522,7 +601,7 @@ private:
     int volB = volTable[(curR9 & 0x10) ? envVol : (curR9 & 0x0F)];
     int volC = volTable[(curR10 & 0x10) ? envVol : (curR10 & 0x0F)];
 
-    // ノイズ控えめ処理
+    // ノイズ控えめ処琁E
     if ((curR7 & 0x09) == 0x01) volA >>= 1;
     if ((curR7 & 0x12) == 0x02) volB >>= 1;
     if ((curR7 & 0x24) == 0x04) volC >>= 1;
@@ -674,7 +753,7 @@ bool loadSdToPsram(int drive, String path) {
   f.close();
 
   strncpy(drive_filepath[drive], path.c_str(), sizeof(drive_filepath[drive]) - 1);
-  drive_filepath[drive][sizeof(drive_filepath[drive]) - 1] = '\0';  // 終端文字を保証
+  drive_filepath[drive][sizeof(drive_filepath[drive]) - 1] = '\0';  // 終端斁E��を保証
   drive_imagesize[drive] = readSize;
 
   uint8_t mediaByte = drives[drive].buffer[0x15];
@@ -927,35 +1006,6 @@ void writeFDCData(int val) {
 }
 
 inline int IRAM_ATTR readByte(void* self, int addr) {
-  //   int slot = (slot_reg >> ((addr >> 13) & 0x06)) & 0x03;
-  //   if (slot == 2 && addr >= 0x7FF0 && addr <= 0x7FFF) {
-  //     int ret = 0xFF;
-  //     switch (addr) {
-  //       case 0x7FF8:
-  //         ret = readWD2793Status();
-  //         fdc_intrq = false;
-  //         break;
-  //       case 0x7FF9: ret = fdc.Track; break;
-  //       case 0x7FFA: ret = fdc.Sector; break;
-  //       case 0x7FFB: ret = (uint8_t)readFDCData(); break;
-  //       case 0x7FFC:
-  //       case 0x7FFD:
-  //       case 0x7FFF:
-  //         ret = 0x3F;
-  //         if (!fdc_intrq) {
-  //           ret |= 0x80;
-  //         }
-
-  //         if ((fdc.Status & 0x02) == 0) {
-  //           ret |= 0x40;
-  //         }
-  //         break;
-  //     }
-  // #ifdef USE_SERIAL_DEBUG
-  //       Serial.printf("FdcR %04X %02X\n", addr, ret);
-  // #endif
-  //     return ret;
-  //   }
   return read_map[addr >> 13][addr & 0x1FFF];
 }
 
@@ -1030,31 +1080,6 @@ inline void IRAM_ATTR writeByte(void* self, int addr, int val) {
           }
           return;
       }
-    } else if (slot == 2) {
-      //       if (slot == 2 && addr >= 0x7FF0 && addr <= 0x7FFF) {
-      // #ifdef USE_SERIAL_DEBUG
-      //         Serial.printf("FdcW %04X %02X\n", addr, val);
-      // #endif
-      //         switch (addr) {
-      //           case 0x7FF8:
-      //             fdc_intrq = false;
-      //             executeWD2793Command(val);
-      //             break;
-      //           case 0x7FF9: fdc.Track = val; break;
-      //           case 0x7FFA: fdc.Sector = val; break;
-      //           case 0x7FFB: writeFDCData(val); break;
-
-      //           case 0x7FFC:
-      //             if (val & 0x01) current_drive = 1;
-      //             else if (val & 0x02) current_drive = 0;
-      //             break;
-
-      //           case 0x7FFD:
-      //             fdc.Side = val & 0x01;
-      //             break;
-      //         }
-      //         return;
-      //       }
     }
   }
   return;
@@ -1186,16 +1211,12 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
 }
 
 void clearStatus() {
-  canvas->setBrushColor(Color::Black);
-  canvas->fillRectangle(48, 192, 48 + 224, 192 + 8);
+  uiFillRect(48, 192, 303, 199, UI_BLACK);
 }
 
 void flashStatus(const char* msg, int waitMs = 0) {
   clearStatus();
-  canvas->setPenColor(Color::White);
-  canvas->setBrushColor(Color::Black);
-  canvas->drawText(48, 192, msg);
-
+  uiText(48, 192, msg, UI_WHITE, UI_BLACK);
   if (waitMs > 0) {
     delay(waitMs);
     clearStatus();
@@ -1320,15 +1341,20 @@ void syncPSRAMtoGame(int idx) {
   uint8_t* tmp_framebuffer = vdp->framebuffer;
   uint8_t* tmp_active_raster = vdp->active_raster;
   uint8_t* tmp_visible_raster = vdp->visible_raster;
-  uint32_t* tmp_colourmap = vdp->colourmap;
 
   memcpy(vdp, p, VDP_SAVE_SIZE);
   p += VDP_SAVE_SIZE;
-  
+
   vdp->framebuffer = tmp_framebuffer;
   vdp->active_raster = tmp_active_raster;
   vdp->visible_raster = tmp_visible_raster;
-  vdp->colourmap = tmp_colourmap;
+  // Re-initialize colourmap from msx_palette (not saved as pointer any more)
+  for (int i = 0; i < 16; i++) {
+    vdp->colourmap[i] = 0xC0 | 
+                        ((msx_palette[i].B >> 6) << 4) |
+                        ((msx_palette[i].G >> 6) << 2) |
+                         (msx_palette[i].R >> 6);
+  }
 
   memcpy((void*)psg_regs, p, 16);
   p += 16;
@@ -1389,11 +1415,8 @@ void clearKeyBuffer() {
 }
 
 void clearCanvasDouble() {
-  canvas->setBrushColor(fabgl::Color(0));
-  canvas->clear();
-  canvas->swapBuffers();
-  canvas->clear();
-  canvas->swapBuffers();
+  if (uiBuffer) memset(uiBuffer, UI_BLACK, 320 * 200);
+  displayMode = DisplayMode::GAME;
 }
 
 String showFileSelector(const char* title, const char* dirPath, const char* ext) {
@@ -1421,27 +1444,26 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext)
   if (files.empty()) return "";
 
   int cursor = 0, topIndex = 0;
-  const int maxRows = 14;
+  const int maxRows = 18;
   bool isBreak = false;
   bool redrawn = true;
 
+  displayMode = DisplayMode::UI;
+
   while (true) {
     if (redrawn) {
-      canvas->setBrushColor(fabgl::Color(4));
-      canvas->clear();
-      canvas->setPenColor(fabgl::Color(15));
-      canvas->drawText(48, 5, title);
+      uiFillRect(0, 0, 319, 199, UI_BLUE);
+      uiText(48, 5, title, UI_WHITE, UI_BLUE);
 
       if (cursor < topIndex) topIndex = cursor;
       if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
 
-      for (int i = 0; i < maxRows && (topIndex + i) < files.size(); ++i) {
+      for (int i = 0; i < maxRows && (topIndex + i) < (int)files.size(); ++i) {
         int idx = topIndex + i;
-        canvas->setPenColor((idx == cursor) ? fabgl::Color(10) : fabgl::Color(15));
-        canvas->drawText(64, 25 + (i * 11), files[idx].c_str());
+        uint8_t fg = (idx == cursor) ? UI_CYAN : UI_WHITE;
+        uiText(64, 25 + (i * 9), files[idx].c_str(), fg, UI_BLUE);
       }
 
-      canvas->swapBuffers();
       redrawn = false;
     }
 
@@ -1778,7 +1800,8 @@ void detectMapper(const char* filename, uint32_t size) {
 }
 
 //M1WAIT is closer to the original hardware behavior and results in a lower CPU load.
-#define CPU_CYCLE_M1WAIT 210 // -8%
+#define CPU_CYCLE_M1WAIT 205 // -10%
+//#define CPU_CYCLE_M1WAIT 210 // -8%
 //#define CPU_CYCLE_M1WAIT 215 // -6%
 #define CPU_CYCLE_NOWAIT 228
 
@@ -1804,7 +1827,6 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     for (int i = 0; i < 262; ++i) {
       ExecZ80(&cpu, CPU_CYCLE_M1WAIT);
       if (i == 192) {
-        tms9918a_rasterize(vdp);
         frameReady = true;
       }
       if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
@@ -1894,23 +1916,25 @@ void setup() {
       ;
   }
 
-  DisplayController.begin();
-  DisplayController.setResolution(VGA_320x200_75Hz, -1, -1, false);
-  canvas = new fabgl::Canvas(&DisplayController);
-  for (int i = 0; i < 16; i++) {
-    DisplayController.setPaletteItem(i, msx_palette[i]);
-  }
+  uiBuffer = (uint8_t*)ps_malloc(320 * 200);
+  if (uiBuffer) memset(uiBuffer, UI_BLACK, 320 * 200);
 
-  canvas->clear();
-  canvas->swapBuffers();
-  canvas->clear();
+  DisplayController.begin();
+  DisplayController.setDrawScanlineCallback(vgaScanlineCallback, nullptr);
+  DisplayController.setResolution(VGA_320x200_75Hz, -1, -1, false);
 
   vdp = tms9918a_create();
   tms9918a_reset(vdp);
   vdp->active_raster = vdp->rasterbuffer0;
   vdp->visible_raster = vdp->rasterbuffer1;
 
-  msxBitmap = new fabgl::Bitmap(256, 192, vdp->visible_raster, fabgl::PixelFormat::Native);
+  // Initialize RGB222 colourmap from msx_palette (00BBGGRR format)
+  for (int i = 0; i < 16; i++) {
+    vdp->colourmap[i] = 0xC0 | 
+                        ((msx_palette[i].B >> 6) << 4) |
+                        ((msx_palette[i].G >> 6) << 2) |
+                         (msx_palette[i].R >> 6);
+  }
 
   soundGenerator.attach(&psgGen);
   psgGen.enable(true);
@@ -1972,7 +1996,7 @@ void setup() {
       File romFile = SD.open(selectedRom.c_str());
       if (romFile) {
 
-        // 暫定処置 Diskが選ばれてなくゲームROMが選択されたらDISK.ROMを無効化する
+        // 暫定�E置 Diskが選ばれてなくゲームROMが選択されたらDISK.ROMを無効化すめE
         if (disk_changed[0] == false) memset(slot_mem[2], 0xFF, 0x10000);
 
         uint32_t size = romFile.size();
@@ -2049,6 +2073,11 @@ void setup() {
   cpu.IPeriod = 512;
   cpu.SPtr.W = 0xF380;
   cpu.AF.B.h = 0x00;
+
+  // Clear status bar area and switch to game display
+  if (uiBuffer) memset(uiBuffer + 192 * 320, UI_BLACK, 8 * 320);
+  displayMode = DisplayMode::GAME;
+
   xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
 
   Serial.println("MSX Booting with Dual Core...");
@@ -2116,12 +2145,10 @@ void loop() {
     digitalWrite(2, HIGH);
 #endif
     if (!isPaused) {
+      tms9918a_rasterize(vdp);
       flip_buffer(vdp);
-      msxBitmap->data = vdp->visible_raster;
-      canvas->drawBitmap(48, 0, msxBitmap);
     }
     updateAllSound();
-    DisplayController.processPrimitives();
 
     updateAllSound();
     updateController();
