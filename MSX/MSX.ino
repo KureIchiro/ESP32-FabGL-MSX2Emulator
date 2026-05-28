@@ -89,10 +89,10 @@
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
 
-#define USE_SERIAL_DEBUG
+//#define USE_SERIAL_DEBUG
 
 //Profiling load for cpuTask (IO14) & loop (IO2); SD access is exclusive.
-#define USE_SIGNAL_DEBUG
+//#define USE_SIGNAL_DEBUG
 
 #define USE_FDC
 
@@ -1865,30 +1865,6 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 #endif
   }
 }
-
-// Custom VGA 320x200 @ 70.09Hz
-// Derived from 640x400@70Hz with half pixel clock and scanCount=2 (line doubling).
-// H: 320+8+48+24=400px @ 12.5875MHz → Hrate=31469Hz
-// V: (200×2)+12+2+35=449 physical lines → 31469/449=70.09Hz
-// H-sync: negative, V-sync: positive  (same polarity as 640x400@70Hz)
-// static const VGATimings VGA_320x200_70Hz = {
-//   "320x200@70Hz",   // label
-//   12587500,         // pixel clock [Hz]
-//   320,              // HVisibleArea
-//   8,                // HFrontPorch
-//   48,               // HSyncPulse
-//   24,               // HBackPorch
-//   200,              // VVisibleArea (logical lines)
-//   12,               // VFrontPorch
-//   2,                // VSyncPulse
-//   35,               // VBackPorch
-//   0,                // HStartingBlock
-//   false,            // HSyncLogic (negative)
-//   true,             // VSyncLogic (positive, 640x400@70Hz standard)
-//   2,                // scanCount  (each logical line displayed twice)
-//   false,            // multiScanBlack
-//   nullptr           // initSequence
-// };
 
 void setup() {
   Serial.begin(115200);
