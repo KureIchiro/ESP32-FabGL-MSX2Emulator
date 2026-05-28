@@ -345,12 +345,17 @@ static void uiDrawChar(int x, int y, char ch, uint8_t fg, uint8_t bg) {
   } else {
     glyph = f->data + charIdx * f->height;
   }
-  for (int row = 0; row < f->height; row++) {
-    if (y + row < 0 || y + row >= 200) continue;
+
+  // 元の呼び出しが y=192 の場合、表示エリア（193〜199）に収めるため自動で1ライン下げます
+  int drawY = (y == 192) ? 193 : y;
+
+  // ループを f->height (8) から 「7」 に変更し、上から7行分だけを描画
+  for (int row = 0; row < 7; row++) {
+    if (drawY + row < 0 || drawY + row >= 200) continue;
     uint8_t bits = pgm_read_byte(glyph + row);
 
-    // 行の先頭アドレスを取得
-    uint8_t* dst_row = uiBuffer + (y + row) * 320;
+    // 行の先頭アドレスを取得（drawY を使用）
+    uint8_t* dst_row = uiBuffer + (drawY + row) * 320;
 
     for (int col = 0; col < f->width; col++) {
       int abs_x = x + col;  // 画面上の絶対X座標を計算
@@ -371,11 +376,16 @@ static void uiText(int x, int y, const char* s, uint8_t fg, uint8_t bg) {
 
 static void IRAM_ATTR vgaScanlineCallback(void* arg, uint8_t* dest, int scanLine) {
   if (displayMode == DisplayMode::GAME && vdp) {
-    if (scanLine < 192) {
-      memset(dest, UI_BLACK, 48);
-      memcpy(dest + 48, vdp->visible_raster + scanLine * 256, 256);
-      memset(dest + 304, UI_BLACK, 16);
+    if (scanLine == 0) {
+      // 0ライン目はチラチラ防止のために完全に真っ黒にする
+      memset(dest, UI_BLACK, 320);
+    } else if (scanLine <= 192) {
+      // 1〜192ライン目にMSXの画面（0〜191行分）を1行ずらして描画
+      memset(dest, UI_BLACK, 32); 
+      memcpy(dest + 32, vdp->visible_raster + (scanLine - 1) * 256, 256); 
+      memset(dest + 288, UI_BLACK, 32); 
     } else {
+      // 193ライン目以降は元々のUI等を表示
       memcpy(dest, uiBuffer + scanLine * 320, 320);
     }
   } else {
@@ -1516,7 +1526,7 @@ void handleDiskSelect(int drive) {
 }
 
 void handleRomSelect() {
-  String rom = showFileSelector("--- SELECT ROM (ESC TO BASIC) ---", "/ROM", ".ROM");
+  String rom = showFileSelector("-- SELECT ROM (ESC TO BASIC) --", "/ROM", ".ROM");
   if (rom == "" || rom == "BASIC (Internal)") {
     selectedRom = "";
   } else {
@@ -1856,6 +1866,30 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   }
 }
 
+// Custom VGA 320x200 @ 70.09Hz
+// Derived from 640x400@70Hz with half pixel clock and scanCount=2 (line doubling).
+// H: 320+8+48+24=400px @ 12.5875MHz → Hrate=31469Hz
+// V: (200×2)+12+2+35=449 physical lines → 31469/449=70.09Hz
+// H-sync: negative, V-sync: positive  (same polarity as 640x400@70Hz)
+// static const VGATimings VGA_320x200_70Hz = {
+//   "320x200@70Hz",   // label
+//   12587500,         // pixel clock [Hz]
+//   320,              // HVisibleArea
+//   8,                // HFrontPorch
+//   48,               // HSyncPulse
+//   24,               // HBackPorch
+//   200,              // VVisibleArea (logical lines)
+//   12,               // VFrontPorch
+//   2,                // VSyncPulse
+//   35,               // VBackPorch
+//   0,                // HStartingBlock
+//   false,            // HSyncLogic (negative)
+//   true,             // VSyncLogic (positive, 640x400@70Hz standard)
+//   2,                // scanCount  (each logical line displayed twice)
+//   false,            // multiScanBlack
+//   nullptr           // initSequence
+// };
+
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_OFF);
@@ -1921,7 +1955,7 @@ void setup() {
 
   DisplayController.begin();
   DisplayController.setDrawScanlineCallback(vgaScanlineCallback, nullptr);
-  DisplayController.setResolution(VGA_320x200_75Hz, -1, -1, false);
+  DisplayController.setResolution(VGA_320x200_70Hz, -1, -1, false);
 
   vdp = tms9918a_create();
   tms9918a_reset(vdp);
