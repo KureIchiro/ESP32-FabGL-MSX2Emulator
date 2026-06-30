@@ -317,52 +317,39 @@ __ALIGN_BEGIN static uint8_t USBD_HID_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIER_
 
 __ALIGN_BEGIN static uint8_t HID_MOUSE_ReportDesc[HID_MOUSE_REPORT_DESC_SIZE]  __ALIGN_END =
 {
-  0x05,   0x01,
-  0x09,   0x02,
-  0xA1,   0x01,
-  0x09,   0x01,
+  /* Gamepad: 1-byte report = [bit7:padding][bit6-4:3 buttons][bit3-0:hat switch] */
+  0x05, 0x01,        /* Usage Page (Generic Desktop)            */
+  0x09, 0x05,        /* Usage (Game Pad)                        */
+  0xA1, 0x01,        /* Collection (Application)                */
 
-  0xA1,   0x00,
-  0x05,   0x09,
-  0x19,   0x01,
-  0x29,   0x03,
+  /* --- Hat switch : 4 bits --- */
+  0x05, 0x01,        /*   Usage Page (Generic Desktop)          */
+  0x09, 0x39,        /*   Usage (Hat switch)                    */
+  0x15, 0x00,        /*   Logical Minimum (0)                   */
+  0x25, 0x07,        /*   Logical Maximum (7)                   */
+  0x35, 0x00,        /*   Physical Minimum (0)                  */
+  0x46, 0x3B, 0x01,  /*   Physical Maximum (315)                */
+  0x65, 0x14,        /*   Unit (Eng Rot: degrees)               */
+  0x75, 0x04,        /*   Report Size (4)                       */
+  0x95, 0x01,        /*   Report Count (1)                      */
+  0x81, 0x42,        /*   Input (Data,Var,Abs,Null State)       */
 
-  0x15,   0x00,
-  0x25,   0x01,
-  0x95,   0x03,
-  0x75,   0x01,
+  /* --- 3 buttons : 3 bits --- */
+  0x05, 0x09,        /*   Usage Page (Button)                   */
+  0x19, 0x01,        /*   Usage Minimum (Button 1)              */
+  0x29, 0x03,        /*   Usage Maximum (Button 3)              */
+  0x15, 0x00,        /*   Logical Minimum (0)                   */
+  0x25, 0x01,        /*   Logical Maximum (1)                   */
+  0x75, 0x01,        /*   Report Size (1)                       */
+  0x95, 0x03,        /*   Report Count (3)                      */
+  0x81, 0x02,        /*   Input (Data,Var,Abs)                  */
 
-  0x81,   0x02,
-  0x95,   0x01,
-  0x75,   0x05,
-  0x81,   0x01,
+  /* --- Padding : 1 bit --- */
+  0x75, 0x01,        /*   Report Size (1)                       */
+  0x95, 0x01,        /*   Report Count (1)                      */
+  0x81, 0x03,        /*   Input (Const,Var,Abs)                 */
 
-  0x05,   0x01,
-  0x09,   0x30,
-  0x09,   0x31,
-  0x09,   0x38,
-
-  0x15,   0x81,
-  0x25,   0x7F,
-  0x75,   0x08,
-  0x95,   0x03,
-
-  0x81,   0x06,
-  0xC0,   0x09,
-  0x3c,   0x05,
-  0xff,   0x09,
-
-  0x01,   0x15,
-  0x00,   0x25,
-  0x01,   0x75,
-  0x01,   0x95,
-
-  0x02,   0xb1,
-  0x22,   0x75,
-  0x06,   0x95,
-  0x01,   0xb1,
-
-  0x01,   0xc0
+  0xC0               /* End Collection                          */
 };
 
 /**
