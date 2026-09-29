@@ -354,8 +354,6 @@ void IRAM_ATTR tms9918a_rasterize(struct tms9918a *vdp) {
 			default: memset(vdp->active_raster, backdrop, 256 * 192);
 		}
 	}
-	// if (vdp->trace)
-	// 	fprintf(stderr, "vdp: frame done.\n");
 	vdp->status |= 0x80;
 }
 

@@ -89,11 +89,6 @@
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
 
-//#define USE_SERIAL_DEBUG
-
-//Profiling load for cpuTask (IO14) & loop (IO2); SD access is exclusive.
-//#define USE_SIGNAL_DEBUG
-
 #define USE_FDC
 
 // TTGO VGA32
@@ -162,7 +157,10 @@ enum MapperType { MAPPER_NONE,
                   MAPPER_RTYPE };
 MapperType currentMapper = MAPPER_NONE;
 
-fabgl::VGADirectController DisplayController;
+// Mark III と同じ VGAController (ビューポートをDMAが直接読む方式)。
+// VGADirectController は1ラインごとの割込みで絵を作るため、モニターによって
+// 表示位置がずれた(1920x1200で確認)。
+fabgl::VGAController DisplayController;
 fabgl::SoundGenerator soundGenerator;
 fabgl::NoiseWaveformGenerator noiseGen;
 fabgl::Mouse Mouse;
@@ -224,7 +222,15 @@ uint8_t* disk_ram_b = nullptr;
 std::vector<String> romFiles;
 String selectedRom = "";
 uint8_t* game_rom_ptr;
-uint8_t* slot_mem[4] = { nullptr, nullptr, nullptr, nullptr };
+uint8_t* slot_mem[4] = { nullptr, nullptr, nullptr, nullptr };  // [3]は未使用(slot3_pageへ)
+uint8_t* slot3_page[8] = { nullptr };  // スロット3 RAM 64KB を8KB×8ページで(内部RAM優先)
+
+// 内部RAMの残量ログ(ビューポートとスロットRAMの確保確認用)
+static void printHeap(const char* tag) {
+  Serial.printf("HEAP[%-11s] free=%6u largest=%6u\n", tag,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
+}
 int rom_banks[4] = { 0, 1, 2, 3 };
 uint8_t* current_pages[4];
 uint32_t rom_mask_8k;
@@ -274,7 +280,6 @@ uint8_t Metallic_Lead[32] = {
 
 //keyboard
 volatile uint8_t msx_key_matrix[12];
-//static uint8_t key_map[256];
 static bool key_map_inited = false;
 uint8_t joy_bits;
 volatile uint8_t joy_bits1;
@@ -306,8 +311,13 @@ static const fabgl::RGB888 msx_palette[16] = {
   { 0xFF, 0xFF, 0xFF }   // 15: White
 };
 
-// --- UI / VGADirectController infrastructure ---
-static uint8_t* uiBuffer = nullptr;  // 320x200 PSRAM software-render buffer (RGB222)
+// --- UI / 画面(VGAController) ---
+// 以前は PSRAM の uiBuffer(320x200) に描き、走査線割込みでゲーム画面と合成していた。
+// 今は UI も FabGL のビューポート(内部RAM)へ直接描き、ゲーム画面は loop() で
+// 1フレームごとにビューポートへ写す。画面の配置は以前と同じ:
+//   0行目=黒 / 1〜192行目=MSX画面(x=32〜287) / 193〜199行目=ステータス表示
+static uint8_t* vpRow[200];     // ビューポートの各行(FabGLのネイティブ形式, 320バイト)
+static bool vpReady = false;
 enum class DisplayMode : uint8_t { UI, GAME };
 static volatile DisplayMode displayMode = DisplayMode::UI;
 
@@ -322,11 +332,16 @@ static constexpr uint8_t UI_GRAY = 0xEA;   // 0xC0 | 0x2A
 
 namespace fabgl { extern const FontInfo FONT_8x8; }
 
+static void vpClearRows(int y0, int y1) {
+  if (!vpReady) return;
+  for (int y = y0; y <= y1 && y < 200; y++) memset(vpRow[y], UI_BLACK, 320);
+}
+
 static void uiFillRect(int x1, int y1, int x2, int y2, uint8_t col) {
-  if (!uiBuffer) return;
+  if (!vpReady) return;
   for (int y = y1; y <= y2 && y < 200; y++) {
     if (y < 0) continue;
-    uint8_t* row = uiBuffer + y * 320;
+    uint8_t* row = vpRow[y];
     for (int x = x1; x <= x2 && x < 320; x++) {
       if (x >= 0) row[x ^ 2] = col;
     }
@@ -334,7 +349,7 @@ static void uiFillRect(int x1, int y1, int x2, int y2, uint8_t col) {
 }
 
 static void uiDrawChar(int x, int y, char ch, uint8_t fg, uint8_t bg) {
-  if (!uiBuffer) return;
+  if (!vpReady) return;
   const fabgl::FontInfo* f = &fabgl::FONT_8x8;
   uint8_t c = (uint8_t)ch;
   if (c < 32 || c > 127) c = '?';
@@ -355,7 +370,7 @@ static void uiDrawChar(int x, int y, char ch, uint8_t fg, uint8_t bg) {
     uint8_t bits = pgm_read_byte(glyph + row);
 
     // 行の先頭アドレスを取得（drawY を使用）
-    uint8_t* dst_row = uiBuffer + (drawY + row) * 320;
+    uint8_t* dst_row = vpRow[drawY + row];
 
     for (int col = 0; col < f->width; col++) {
       int abs_x = x + col;  // 画面上の絶対X座標を計算
@@ -374,26 +389,15 @@ static void uiText(int x, int y, const char* s, uint8_t fg, uint8_t bg) {
   }
 }
 
-static void IRAM_ATTR vgaScanlineCallback(void* arg, uint8_t* dest, int scanLine) {
-  if (displayMode == DisplayMode::GAME && vdp) {
-    if (scanLine == 0) {
-      // 0ライン目はチラチラ防止のために完全に真っ黒にする
-      memset(dest, UI_BLACK, 320);
-    } else if (scanLine <= 192) {
-      // 1〜192ライン目にMSXの画面（0〜191行分）を1行ずらして描画
-      memset(dest, UI_BLACK, 32); 
-      memcpy(dest + 32, vdp->visible_raster + (scanLine - 1) * 256, 256); 
-      memset(dest + 288, UI_BLACK, 32); 
-    } else {
-      // 193ライン目以降は元々のUI等を表示
-      memcpy(dest, uiBuffer + scanLine * 320, 320);
-    }
-  } else {
-    if (uiBuffer) {
-      memcpy(dest, uiBuffer + scanLine * 320, 320);
-    } else {
-      memset(dest, UI_BLACK, 320);
-    }
+// ゲーム画面(192行)をビューポートの1〜192行目、x=32〜287へ写す。
+// ラスタは tms9918a.c が既にFabGLのネイティブ形式(ピクセル並べ替え済み・
+// 同期ビット0xC0入り)で作っているので、行単位のmemcpyで済む。
+// 左右の黒帯(0〜31, 288〜319)と0行目は vpClearRows() で黒にしたまま触らない。
+static void presentGameFrame() {
+  if (!vpReady || !vdp) return;
+  const uint8_t* src = vdp->visible_raster;
+  for (int y = 0; y < 192; y++) {
+    memcpy(vpRow[y + 1] + 32, src + y * 256, 256);
   }
 }
 
@@ -689,8 +693,8 @@ void updateMemoryMap() {
         break;
 
       case 3:
-        read_map[page] = &slot_mem[3][page * 0x2000];
-        write_map[page] = &slot_mem[3][page * 0x2000];
+        read_map[page] = slot3_page[page];
+        write_map[page] = slot3_page[page];
         break;
     }
   }
@@ -763,7 +767,7 @@ bool loadSdToPsram(int drive, String path) {
   f.close();
 
   strncpy(drive_filepath[drive], path.c_str(), sizeof(drive_filepath[drive]) - 1);
-  drive_filepath[drive][sizeof(drive_filepath[drive]) - 1] = '\0';  // 終端斁E��を保証
+  drive_filepath[drive][sizeof(drive_filepath[drive]) - 1] = '\0';  // 終端文字を保証
   drive_imagesize[drive] = readSize;
 
   uint8_t mediaByte = drives[drive].buffer[0x15];
@@ -841,6 +845,9 @@ bool savePsramToSd(int drive) {
 }
 
 void executeWD2793Command(uint8_t cmd) {
+  // WD2793: INTRQ はステータス読み出しか、新しいコマンドの書き込みで下がる。
+  // 前のコマンドのINTRQが残っていると、完了待ちのBIOSが「即完了」と誤認する。
+  fdc_intrq = false;
   fdc.Command = cmd;
   fdc_multi_sector = (cmd & 0x10) != 0;
 
@@ -1260,7 +1267,7 @@ void syncGametoPSRAM(int idx) {
   uint8_t* p = psram_slots[idx];
 
   // 1. RAM (64KB)
-  memcpy(p, slot_mem[3], 65536);
+  for (int i = 0; i < 8; i++) memcpy(p + i * 0x2000, slot3_page[i], 0x2000);
   p += 65536;
 
   // 2. CPU / System State
@@ -1319,7 +1326,7 @@ void syncPSRAMtoGame(int idx) {
   if (psram_slots[idx] == NULL) return;
   uint8_t* p = psram_slots[idx];
 
-  memcpy(slot_mem[3], p, 65536);
+  for (int i = 0; i < 8; i++) memcpy(slot3_page[i], p + i * 0x2000, 0x2000);
   p += 65536;
 
   StateSaveData state;
@@ -1425,7 +1432,7 @@ void clearKeyBuffer() {
 }
 
 void clearCanvasDouble() {
-  if (uiBuffer) memset(uiBuffer, UI_BLACK, 320 * 200);
+  vpClearRows(0, 199);
   displayMode = DisplayMode::GAME;
 }
 
@@ -1645,7 +1652,6 @@ void updateKeyboard() {
       } else if (isBreak) f8_held = false;
     } else if (sc == 0x01) {  // F9
 #ifdef USE_FDC
-      Serial.printf("F9 pressed\n");
       if (!isBreak && !f9_held) {
         f9_held = true;
         if (isPaused) {
@@ -1820,8 +1826,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   int64_t nextFrameTime = esp_timer_get_time();
   int64_t now;
   int64_t waitTime;
-  bool irq_line_status = false;
-  
+
   while (1) {
     if (isPaused) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -1829,9 +1834,6 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       continue;
     }
 
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(14, HIGH);
-#endif
     nextFrameTime += frameTimeUs;
 
     for (int i = 0; i < 262; ++i) {
@@ -1843,9 +1845,6 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
         IntZ80(&cpu, 0x38);
       }
     }
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(14, LOW);
-#endif
     now = esp_timer_get_time();
     waitTime = nextFrameTime - now;
 
@@ -1857,12 +1856,6 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
         asm volatile("nop");
       }
     }
-#ifdef USE_SERIAL_DEBUG
-    else {
-      //'x' appears when the frame timing exceeds 16.67ms.
-      Serial.printf("x");
-    }
-#endif
   }
 }
 
@@ -1888,10 +1881,46 @@ void setup() {
 
   initSaveSystem();
 
+  // ---- 画面: 内部RAMの大物より先に確保する ----
+  // FabGLはビューポート(320x200=64,000B)を確保するとき、内部RAMの最大連続空きを
+  // 約40KB残そうとし、それを割り込む時点で確保を打ち切る(X1で155行止まりを実測)。
+  // だからスロットRAMより先に取る。
+  printHeap("before VGA");
+  DisplayController.begin();
+  DisplayController.setResolution(VGA_320x200_70Hz, -1, -1, false);
+  printHeap("after VGA");
+  {
+    bool ok = true;
+    for (int y = 0; y < 200; y++) {
+      vpRow[y] = DisplayController.getScanline(y);
+      if (!vpRow[y] || ((uintptr_t)vpRow[y] & 3)) {
+        Serial.printf("VIEWPORT row %d is NULL or unaligned (%p)\n", y, vpRow[y]);
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
+      Serial.println("Viewport allocation FAILED!");
+      while (1) delay(1000);
+    }
+    vpReady = true;
+    vpClearRows(0, 199);
+    // UIの色定数とVDPのカラーマップは同期ビット=0xC0決め打ちなので確認しておく
+    uint8_t rawBlack = DisplayController.createRawPixel(fabgl::RGB222(0, 0, 0));
+    Serial.printf("VIEWPORT: row0=%p row1=%p stride=%d rawBlack=%02X (expected C0)\n",
+                  vpRow[0], vpRow[1], (int)(vpRow[1] - vpRow[0]), rawBlack);
+  }
+
+  // スロット0(BIOS 32KB)は連続で必要。FabGLは最大連続空きを約40KB残すので入る。
   slot_mem[0] = (uint8_t*)heap_caps_malloc(0x8000, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (slot_mem[0]) {
-    memset(slot_mem[0], 0, 0x8000);
     Serial.println("Slot 0 (Fast RAM) allocated in Internal SRAM.");
+  } else {
+    slot_mem[0] = (uint8_t*)ps_malloc(0x8000);
+    Serial.println("Slot 0 fell back to PSRAM (slower)!");
+  }
+  if (slot_mem[0]) {
+    memset(slot_mem[0], 0, 0x8000);
   } else {
     Serial.println("Slot 0 RAM Allocation Failed!");
     while (1)
@@ -1916,22 +1945,25 @@ void setup() {
     while (1)
       ;
   }
-  slot_mem[3] = (uint8_t*)heap_caps_malloc(0x10000, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-  if (slot_mem[3]) {
-    memset(slot_mem[3], 0, 0x10000);
-    Serial.println("Slot 3 (Fast RAM) allocated in Internal SRAM.");
-  } else {
-    Serial.println("Slot 3 RAM Allocation Failed!");
-    while (1)
-      ;
+  // スロット3(RAM 64KB)は8KB×8ページで取る。ビューポート確保後は64KBの連続領域が
+  // まず残らないため。Z80からは read_map/write_map(8KB単位)経由なので連続である必要はない。
+  {
+    int internalPages = 0;
+    for (int i = 0; i < 8; i++) {
+      slot3_page[i] = (uint8_t*)heap_caps_malloc(0x2000, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+      if (slot3_page[i]) internalPages++;
+      else slot3_page[i] = (uint8_t*)ps_malloc(0x2000);
+      if (!slot3_page[i]) {
+        Serial.println("Slot 3 RAM Allocation Failed!");
+        while (1)
+          ;
+      }
+      memset(slot3_page[i], 0, 0x2000);
+    }
+    Serial.printf("Slot 3 RAM: %d/8 pages in Internal SRAM%s\n", internalPages,
+                  internalPages == 8 ? "." : " (rest in PSRAM, slower)!");
   }
-
-  uiBuffer = (uint8_t*)ps_malloc(320 * 200);
-  if (uiBuffer) memset(uiBuffer, UI_BLACK, 320 * 200);
-
-  DisplayController.begin();
-  DisplayController.setDrawScanlineCallback(vgaScanlineCallback, nullptr);
-  DisplayController.setResolution(VGA_320x200_70Hz, -1, -1, false);
+  printHeap("after slots");
 
   vdp = tms9918a_create();
   tms9918a_reset(vdp);
@@ -2006,26 +2038,25 @@ void setup() {
       File romFile = SD.open(selectedRom.c_str());
       if (romFile) {
 
-        // 暫定�E置 Diskが選ばれてなくゲームROMが選択されたらDISK.ROMを無効化すめE
+        // 暫定処置: ディスクが選ばれておらずゲームROMが選択されたら、DISK.ROMを無効化する
         if (disk_changed[0] == false) memset(slot_mem[2], 0xFF, 0x10000);
 
         uint32_t size = romFile.size();
         const char* filename = romFile.name();
         Serial.printf("Loading Game ROM: %s (%d bytes)\n", selectedRom.c_str(), size);
 
+        // 'AB' ヘッダの確認。先頭(バンク0)に加え、R-TYPEのように
+        // バンク23の先頭にヘッダを持つROMもあるため両方を見る。
         uint8_t header0[2];
         romFile.seek(0);
         romFile.read(header0, 2);
-        Serial.printf("DEBUG: File Start (Bank 0) = %02X %02X\n", header0[0], header0[1]);
         uint8_t header23[2];
         romFile.seek(384 * 1024 - 16 * 1024);  // バンク23の開始位置へ
         romFile.read(header23, 2);
-        Serial.printf("DEBUG: File End (Bank 23) = %02X %02X\n", header23[0], header23[1]);
 
         if ((header0[0] == 'A' && header0[1] == 'B') || (header23[0] == 'A' && header23[1] == 'B')) {
 
           long original_size = size;
-          Serial.printf("DEBUG: Actual ROM File Size = %ld bytes\n", original_size);
           rom_size = 1;
           while (rom_size < original_size) rom_size <<= 1;
           rom_mask = rom_size - 1;
@@ -2034,18 +2065,14 @@ void setup() {
           game_rom_ptr = (uint8_t*)ps_malloc(rom_size);
           detectMapper(filename, original_size);
           const char* mapperNames[] = { "NONE", "KONAMI", "ASCII8", "ASCII16", "RTYPE" };
-          Serial.printf("DEBUG: Mapper Assigned = %s (%d)\n", mapperNames[currentMapper], currentMapper);
+          Serial.printf("Mapper: %s (%d)\n", mapperNames[currentMapper], currentMapper);
 
           if (game_rom_ptr) {
             romFile.seek(0);
             romFile.read(game_rom_ptr, original_size);
             if (rom_size != original_size) {
-              if (currentMapper == MAPPER_RTYPE) {
-                memset(game_rom_ptr + original_size, 0xFF, rom_size - original_size);
-                //memcpy(game_rom_ptr + original_size, game_rom_ptr, rom_size - original_size);
-              } else {
-                memset(game_rom_ptr + original_size, 0xFF, rom_size - original_size);
-              }
+              // 2のべき乗に切り上げた残りは 0xFF(空きROM)で埋める
+              memset(game_rom_ptr + original_size, 0xFF, rom_size - original_size);
             }
           }
 
@@ -2085,26 +2112,14 @@ void setup() {
   cpu.AF.B.h = 0x00;
 
   // Clear status bar area and switch to game display
-  if (uiBuffer) memset(uiBuffer + 192 * 320, UI_BLACK, 8 * 320);
+  vpClearRows(0, 199);   // ROM選択画面の残りを消してからゲーム表示へ
   displayMode = DisplayMode::GAME;
 
   xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
 
   Serial.println("MSX Booting with Dual Core...");
-
-#ifndef USE_SERIAL_DEBUG
   Serial.end();
-#else
-  Serial.println("MSX Booting with Debug Serial...");
-#endif
   Serial1.begin(115200, SERIAL_8N1, 39, -1);
-
-#ifdef USE_SIGNAL_DEBUG
-  SPI.end();
-  SD.end();
-  pinMode(14, OUTPUT);
-  pinMode(2, OUTPUT);
-#endif
 }
 
 void updateAllSound() {
@@ -2122,53 +2137,18 @@ void updateAllSound() {
   }
 }
 
-// void drawDiskIndicator() {
-//   // Display position (bottom right)
-//   const int x = 294;  // Position for single indicator (320 - 8)
-//   const int y = 192;
-
-//   // Check Drive A status
-//   bool isSelected = (current_drive == 0);
-//   bool isAccessing = isSelected && (is_reading || is_writing);
-
-//   if (disk_changed[0]) {
-//     // --- Disk Inserted ---
-//     if (isAccessing) {
-//       canvas->setBrushColor(Color::BrightGreen);
-//     } else {
-//       canvas->setBrushColor(Color::Green);
-//     }
-//     canvas->setPenColor(Color::Green);
-//     canvas->fillRectangle(x, y + 2, x + 6, y + 5);
-//   } else {
-//     // --- No Disk ---
-//     canvas->setBrushColor(Color::Black);
-//     canvas->setPenColor(Color::Green);
-//     canvas->drawRectangle(x, y + 2, x + 6, y + 5);
-//   }
-// }
-
 void loop() {
   if (frameReady) {
     frameReady = false;
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(2, HIGH);
-#endif
     if (!isPaused) {
       tms9918a_rasterize(vdp);
       flip_buffer(vdp);
+      // UI表示中(ファイル選択など)は画面を上書きしない
+      if (displayMode == DisplayMode::GAME) presentGameFrame();
     }
-    updateAllSound();
-
     updateAllSound();
     updateController();
     updateKeyboard();
-
-    //drawDiskIndicator();
-
-#ifdef USE_SIGNAL_DEBUG
-    digitalWrite(2, LOW);
-#endif
   }
   updateAllSound();
 
