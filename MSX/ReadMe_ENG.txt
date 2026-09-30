@@ -50,7 +50,12 @@ ASCII 16KB … (A16)
 
 [Important: Notes on ROMs]
 * BIOS: This emulator requires an original BIOS. C-BIOS is not supported.
-* DISK.ROM: To use the FDD, an I/O port access type DISK.ROM is required. Memory-mapped I/O types are not supported.
+* DISK.ROM: To use the FDD, a DISK.ROM of one of the following types is required. Select the type that matches your DISK.ROM with the following line in MSX.ino:
+  Sony/Philips type (memory-mapped, FDC registers at 7FF8h-7FFFh) -> keep this line enabled (default)
+  I/O port type (e.g. Microsol, FDC registers at D0h-D4h)          -> comment out this line
+#define DISK_IF_MEMORY_MAPPED
+With the memory-mapped type, the serial log at startup shows "DiskROM: 7FF8h-7FFFh refs=". If it shows refs=0 with a WARNING, your DISK.ROM is probably an I/O port type.
+The Panasonic/National type (7FB8h-7FBFh) is not supported.
 If you do not intend to use the FDD, please comment out the following line:
 #define USE_FDC
 

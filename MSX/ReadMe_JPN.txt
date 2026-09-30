@@ -46,7 +46,12 @@ Ascii16KB…(A16)
 
 【重要：ROMに関する注意】
 ・BIOS: 本エミュレータは純正BIOSを前提としています。C-BIOSには対応していません。
-・DISK.ROM: FDDを使用する場合、I/Oポートアクセス型のDISK.ROMが必要です。メモリマップドI/O型には対応していません。
+・DISK.ROM: FDDを使用する場合、次のどちらかの形式のDISK.ROMが必要です。お使いのDISK.ROMに合わせて、MSX.ino の下記の行で切り替えてください。
+  ソニー/フィリップス型(メモリマップド、FDCレジスタ 7FF8h〜7FFFh) → 下記を有効にする(初期設定)
+  I/Oポート型(Microsol等、FDCレジスタ D0h〜D4h) → 下記をコメントアウトする
+#define DISK_IF_MEMORY_MAPPED
+メモリマップド型を選んだときは、起動時のシリアルログに「DiskROM: 7FF8h-7FFFh refs=」が出ます。refs=0 で WARNING が出た場合は、I/Oポート型のDISK.ROMの可能性があります。
+松下(ナショナル)型(7FB8h〜7FBFh)には対応していません。
 FDDを使用しない場合、下記をコメントアウトしてください。
 #define USE_FDC
 

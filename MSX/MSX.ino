@@ -91,6 +91,11 @@
 
 #define USE_FDC
 
+//Disk interface type of your DISK.ROM (effective only with USE_FDC).
+//  defined     : Sony/Philips type, memory-mapped FDC registers at 7FF8h-7FFFh
+//  not defined : I/O port type (Microsol etc.), FDC registers at D0h-D4h
+#define DISK_IF_MEMORY_MAPPED
+
 // TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
@@ -207,7 +212,6 @@ uint8_t* sector_ptr = nullptr;
 bool is_reading = false;
 bool is_writing = false;
 int fdc_data_index = 0;
-uint8_t fdc_control_reg = 0x00;
 bool fdc_intrq = false;
 int fdc_step_direction = -1;
 bool fdc_multi_sector = false;
@@ -238,7 +242,16 @@ uint32_t rom_mask;
 uint32_t rom_size_bytes;
 long rom_size = 0;
 bool isRomListLoaded = false;
+// read_map : データ読み出し用。メモリマップド型では nullptr のページを readMemSpecial() へ回す
+//            (ソニー型ディスクROMの 7FF8h〜7FFFh のFDCレジスタを捕まえるため)
+// op_map   : 命令読み込み用。常に実メモリを指す。Z80.c が直接引く(FAST_RDOP)
 uint8_t* read_map[8];
+extern "C" { uint8_t* op_map[8]; }
+#ifdef DISK_IF_MEMORY_MAPPED
+// DISK.ROMがスロット2に載っているときだけFDCレジスタを出す。
+static bool diskRomLoaded = false;
+static uint8_t disk_mm_drive_reg = 0;
+#endif
 uint8_t* write_map[8];
 uint8_t dummy_page[8192];
 
@@ -697,7 +710,14 @@ void updateMemoryMap() {
         write_map[page] = slot3_page[page];
         break;
     }
+    op_map[page] = read_map[page];
   }
+#ifdef DISK_IF_MEMORY_MAPPED
+  // ソニー型ディスクROMが 4000h〜7FFFh に見えている間だけ、6000h〜7FFFh の
+  // データ読み出しを readMemSpecial() へ回す(7FF8h〜7FFFh がFDCレジスタ)。
+  // 命令の読み込みは op_map で常に直接読むので、ディスクROMのコード実行は遅くならない。
+  if (diskRomLoaded && ((slot_reg >> 2) & 0x03) == 2) read_map[3] = nullptr;
+#endif
 }
 
 inline void updateBankPointer(int page_idx, uint8_t v) {
@@ -1022,9 +1042,65 @@ void writeFDCData(int val) {
   }
 }
 
+#ifdef DISK_IF_MEMORY_MAPPED
+// ---------------------------------------------------------------------------
+// ソニー(フィリップス)型 メモリマップドFDC  7FF8h〜7FFFh
+//   7FF8 R:ステータス W:コマンド / 7FF9 トラック / 7FFA セクタ / 7FFB データ
+//   7FFC bit0:サイド / 7FFD bit0-1:ドライブ(01=B,それ以外=A) bit7:モーター
+//   7FFF R: bit6=/INTRQ, bit7=/DRQ(どちらもアクティブLOW)
+//   WD2793本体は executeWD2793Command / readWD2793Status / readFDCData / writeFDCData。
+// ---------------------------------------------------------------------------
+static uint8_t fdcMemRead(int r) {
+  switch (r) {
+    case 0: return readWD2793Status();
+    case 1: return fdc.Track;
+    case 2: return fdc.Sector;
+    case 3: return readFDCData();
+    case 4: return 0xFE | (fdc.Side & 1);
+    case 5: return disk_mm_drive_reg;
+    case 7: {
+      uint8_t v = 0xC0;
+      if (fdc_intrq) v &= ~0x40;
+      if ((is_reading || is_writing) && fdc_data_index < 512) v &= ~0x80;
+      return v;
+    }
+    default: return 0xFF;
+  }
+}
+
+static void fdcMemWrite(int r, uint8_t v) {
+  switch (r) {
+    case 0: executeWD2793Command(v); break;
+    case 1: fdc.Track = v; break;
+    case 2: fdc.Sector = v; break;
+    case 3: writeFDCData(v); break;
+    case 4: fdc.Side = v & 1; break;
+    case 5:
+      disk_mm_drive_reg = v;
+      current_drive = ((v & 0x03) == 0x01) ? 1 : 0;
+      break;
+    default: break;
+  }
+}
+
+// read_map が nullptr のページの読み出し(今はソニー型FDCのページだけ)
+static int IRAM_ATTR readMemSpecial(int addr) {
+  if (addr >= 0x7FF8 && addr <= 0x7FFF) return fdcMemRead(addr & 7);
+  return op_map[addr >> 13][addr & 0x1FFF];
+}
+
+// 通常は表を1回引くだけ。nullptr(=捕まえるページ)のときだけ分岐先へ。
+inline int IRAM_ATTR readByte(void* self, int addr) {
+  const uint8_t* p = read_map[addr >> 13];
+  if (__builtin_expect(p != nullptr, 1)) return p[addr & 0x1FFF];
+  return readMemSpecial(addr);
+}
+#else
+// I/Oポート型のFDCはreadIO/writeIOで処理するので、メモリ読み出しは表を引くだけ(分岐なし)。
 inline int IRAM_ATTR readByte(void* self, int addr) {
   return read_map[addr >> 13][addr & 0x1FFF];
 }
+#endif
 
 inline void IRAM_ATTR writeByte(void* self, int addr, int val) {
   uint16_t a = (uint16_t)addr;
@@ -1098,6 +1174,12 @@ inline void IRAM_ATTR writeByte(void* self, int addr, int val) {
           return;
       }
     }
+#ifdef DISK_IF_MEMORY_MAPPED
+    else if (slot == 2 && a >= 0x7FF8 && a <= 0x7FFF) {
+      // ソニー型FDC。DISK.ROMが無いときスロット2は空(0xFF)なので、書かれても無害。
+      fdcMemWrite(a & 7, (uint8_t)val);
+    }
+#endif
   }
   return;
 }
@@ -1134,6 +1216,8 @@ inline int IRAM_ATTR readIO(void* context, int port) {
   }
   if (p == 0xAA) return selected_row;
 
+#ifndef DISK_IF_MEMORY_MAPPED
+  // I/Oポート型FDC (Microsol等 D0h〜D3h、7Ch〜7Fh にも同じレジスタ)
   if ((p >= 0x7C && p <= 0x7F) || (p >= 0xD0 && p <= 0xD3)) {
     p = (p >= 0xD0) ? (p - 0x54) : p;
     if (p == 0x7C) return readWD2793Status();
@@ -1141,6 +1225,7 @@ inline int IRAM_ATTR readIO(void* context, int port) {
     else if (p == 0x7E) return fdc.Sector;
     else if (p == 0x7F) return (uint8_t)readFDCData();
   }
+#endif
 
   return 0xFF;
 }
@@ -1148,7 +1233,6 @@ inline int IRAM_ATTR readIO(void* context, int port) {
 inline void IRAM_ATTR writeIO(void* context, int port, int val) {
   uint8_t p = (uint8_t)port;
   uint8_t v = (uint8_t)val;
-  static int cnt = 0;
 
   if ((p & 0xFE) == 0x98) {
     tms9918a_write(vdp, p & 0x01, v);
@@ -1209,6 +1293,8 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
     selected_row = v & 0x0F;
     return;
   }
+#ifndef DISK_IF_MEMORY_MAPPED
+  // I/Oポート型FDC (Microsol等 D0h〜D4h、7Bh〜7Fh にも同じレジスタ)
   if ((p >= 0x7B && p <= 0x7F) || (p >= 0xD0 && p <= 0xD4)) {
     p = (p >= 0xD0) ? (p - 0x54) : p;
     switch (p) {
@@ -1225,6 +1311,7 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
       default: return;
     }
   }
+#endif
 }
 
 void clearStatus() {
@@ -2024,6 +2111,21 @@ void setup() {
       diskRomFile.read(&slot_mem[2][0x8000], size);
       diskRomFile.close();
       Serial.printf("DiskROM Magic: %02X %02X\n", slot_mem[2][0x4000], slot_mem[2][0x4001]);
+#ifdef DISK_IF_MEMORY_MAPPED
+      diskRomLoaded = true;
+      // ソニー/フィリップス型はFDCレジスタ 7FF8h〜7FFFh を絶対番地で参照する。
+      // 1つも無ければ別方式(I/Oポート型や松下型)のDISK.ROMなので警告だけ出す。
+      {
+        const uint8_t* r = &slot_mem[2][0x4000];
+        int refs = 0;
+        for (size_t i = 0; i + 1 < size; i++) {
+          if (r[i + 1] == 0x7F && r[i] >= 0xF8) refs++;
+        }
+        Serial.printf("DiskROM: 7FF8h-7FFFh refs=%d%s\n", refs,
+                      refs ? "" : "  WARNING: not a Sony/Philips-type DISK.ROM"
+                                  " (for I/O port type, comment out DISK_IF_MEMORY_MAPPED)");
+      }
+#endif
     } else {
       Serial.println("Warning: /disk.rom not found. FDD will be disabled.");
     }
@@ -2039,7 +2141,12 @@ void setup() {
       if (romFile) {
 
         // 暫定処置: ディスクが選ばれておらずゲームROMが選択されたら、DISK.ROMを無効化する
-        if (disk_changed[0] == false) memset(slot_mem[2], 0xFF, 0x10000);
+        if (disk_changed[0] == false) {
+          memset(slot_mem[2], 0xFF, 0x10000);
+#ifdef DISK_IF_MEMORY_MAPPED
+          diskRomLoaded = false;   // DISK.ROMを外したのでFDCレジスタも出さない
+#endif
+        }
 
         uint32_t size = romFile.size();
         const char* filename = romFile.name();

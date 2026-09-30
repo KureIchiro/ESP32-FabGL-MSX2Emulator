@@ -58,6 +58,14 @@ extern byte *RAM[];
 INLINE byte OpZ80(zword A) { return(RAM[A>>13][A&0x1FFF]); }
 #endif
 
+/* ESP32版MSX: 命令の読み込み(オペコード・即値・スタック)は8KBページ表を   */
+/* 直接引く(関数呼び出しも分岐もなし)。fMSX の FAST_RDOP と同じ構成。     */
+/* データの読み出しは RdZ80() を通るので、メモリマップドI/O(ソニー型FDC)   */
+/* を捕まえられる。op_map は MSX.ino の updateMemoryMap() が保守する。     */
+#define FAST_RDOP
+extern byte *op_map[];
+INLINE byte OpZ80(zword A) { return(op_map[A>>13][A&0x1FFF]); }
+
 /** FAST_RDOP ************************************************/
 /** With this #define not present, RdZ80() should perform   **/
 /** the functions of OpZ80().                               **/
