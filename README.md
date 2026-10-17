@@ -32,6 +32,8 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
    - FabGLベースのMSX本体エミュレータ（MSX1 / MSX2+）。
 2. **Joystick Converter (STM32)**
    - アタリ仕様のジョイスティックをESP32-MSXEmulator仕様に変換するためのユニット。
+3. **Joystick Converter (Arduino / other MCUs)**
+   - `Joystick_Converter_arduino` にArduino Mega 2560向け、`Joystick_Converter_arduino_nano` にATmega328P搭載Arduino Nano向けの変換スケッチがあります。他のマイコンへ移植する場合のベースとしても利用できます。
 
 ### クレジットと謝辞
 
@@ -251,6 +253,21 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 
 基板にヘッダを半田付けし、端側のピン（白:3.3V、黒:GND、グレー:RX）に接続します。
 
+### 6-3. Arduino・他のマイコンを使う場合
+
+`Joystick_Converter_arduino` フォルダにArduino Mega 2560向け、`Joystick_Converter_arduino_nano` フォルダにATmega328P搭載Arduino Nano向けのスケッチがあります。他のマイコンへ移植する場合も、スケッチと上記のUART通信仕様をベースとして利用できます。
+
+5V動作のArduino Mega 2560のTX1 (D18)、またはArduino NanoのTX (D1) をESP32のIO39 (RX) に接続する場合は、抵抗分圧またはレベル変換器を使って3.3Vにしてください。ESP32の入力端子に5Vを直接入力しないでください。3.3Vロジックで動作する他のマイコンへ移植する方法もあります。ピン配置などの詳細は各Arduinoフォルダの `ReadMe.txt` を参照してください。Nano版はA6用の外付けプルアップ抵抗が必要です。
+
+**回路上の注意**
+
+- ArduinoとESP32のGNDを必ず共通にしてください。UARTはArduinoのTXからESP32のIO39 (RX) への一方向接続です。
+- 5V ArduinoのTXをESP32へ直結しないでください。抵抗分圧またはロジックレベル変換器で、ESP32側の信号を3.3Vにしてください。Arduinoの5V電源をESP32の3.3V端子へ接続しないでください。
+- コントローラーの方向・ボタン・連射スイッチは、各入力ピンとGNDの間に接続します。異なるArduinoピン同士や電源同士をスイッチで短絡しないでください。
+- Nano版のA6はアナログ入力専用で内部プルアップがありません。指定の外付け10kΩプルアップを接続してください。またD0はコントローラー入力とUSBシリアル書き込みで共用するため、書き込み時はD0に接続した連射SW2をOFFにしてください。
+
+Arduino版には、STM32版にあるUSB HIDジョイスティック機能はありません。
+
 ## 7. キーボード操作マニュアル
 
 本エミュレータは、PC用のPS/2キーボードをMSXのキーボードとしてエミュレートします。
@@ -353,6 +370,8 @@ The boot menu and the file selector are shared by both. F12 and F8 are common; d
    - MSX main unit emulators based on FabGL (MSX1 / MSX2+).
 2. **Joystick Converter (STM32)**
    - A unit for converting Atari-style joysticks for use with the ESP32 MSX Emulator.
+3. **Joystick Converter (Arduino / other MCUs)**
+   - `Joystick_Converter_arduino` contains a converter sketch for Arduino Mega 2560, and `Joystick_Converter_arduino_nano` contains one for ATmega328P-based Arduino Nano. They can also serve as a basis for porting to other microcontrollers.
 
 ### Credits & Acknowledgments
 
@@ -569,6 +588,21 @@ The emulator receives the following 2-byte binary data via serial and maps it to
 <img src="JoyStickConnection.JPG" width="300">
 
 Solder the headers to the board. Connect to the pins on the edge of the board (White: 3.3V, Black: GND, Grey: RX).
+
+### 6-3. Using Arduino or Other Microcontrollers
+
+The `Joystick_Converter_arduino` folder contains a sketch for Arduino Mega 2560, and `Joystick_Converter_arduino_nano` contains one for ATmega328P-based Arduino Nano. The sketches and UART protocol above can also be used as a basis for porting to other microcontrollers.
+
+When connecting the 5V TX1 (D18) output of an Arduino Mega 2560 or TX (D1) output of an Arduino Nano to ESP32 IO39 (RX), use a resistor voltage divider or a logic-level shifter to reduce the signal to 3.3V. Do not connect 5V directly to an ESP32 input. Alternatively, port the sketch to another microcontroller with 3.3V logic. See each Arduino folder's `ReadMe.txt` for pin assignments and details. The Nano version requires an external pull-up resistor for A6.
+
+**Circuit cautions**
+
+- Connect Arduino GND and ESP32 GND together. UART is a one-way connection from Arduino TX to ESP32 IO39 (RX).
+- Never connect a 5V Arduino TX directly to the ESP32. Use a resistor voltage divider or logic-level shifter so the signal at the ESP32 is 3.3V. Do not connect the Arduino 5V supply to the ESP32 3.3V pin.
+- Connect each controller direction, button, and turbo switch between its assigned input pin and GND. Do not use a switch to short two Arduino pins or power rails together.
+- Nano A6 is analog-input-only and has no internal pull-up; install the specified external 10kΩ pull-up. Nano D0 is shared by a controller turbo switch and USB-serial programming, so turn off the turbo switch connected to D0 while uploading.
+
+The Arduino version does not include the USB HID joystick functionality available in the STM32 version.
 
 ## 7. Keyboard Manual
 
