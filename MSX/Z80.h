@@ -21,7 +21,7 @@ extern "C" {
 /* #define DEBUG */            /* Compile debugging version  */
 #define LSB_FIRST              /* Compile for low-endian CPU */
 /* #define MSB_FIRST */        /* Compile for hi-endian CPU  */
-#define STEPZ80                /* Enable the stepz80 function*/
+/* #define STEPZ80 */           /* StepZ80 は使っていない(分岐表と一緒にリンクされて IRAM を 17KB 使うので外す) */
 #define EXECZ80                /* Enable the execz80 function*/
 
                                /* LoopZ80() may return:      */

@@ -76,18 +76,43 @@
 #include <SD.h>
 #include <fabgl.h>
 #include <vector>
+#include <algorithm>
 #include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
 #include "tms9918a.h"
 #include "Z80.h"
 #include "KeyboardSystem.hpp"
+#include "JoyKeys.hpp"
+#include "wd2793.h"
+#include "emu2413.h"
+
+// (Arduino が関数の宣言を先頭に足すので、引数に使う型はここで定義しておく)
+enum MapperType { MAPPER_NONE,
+                  MAPPER_KONAMI,
+                  MAPPER_ASCII8,
+                  MAPPER_ASCII16,
+                  MAPPER_RTYPE,
+                  MAPPER_SCC,        // ROM の無い SCC カートリッジ(SD スナッチャーなどの音源の代わり。RAM は無し)
+                  MAPPER_FMPAC };    // FM-PAC(ROM 16KB×バンク + SRAM 8KB + OPLL)
+
+// カートリッジ(スロット1 / 2)。pages は 4000h/6000h/8000h/A000h の 8KB(nullptr = 空き)
+struct Cart {
+  uint8_t* rom;
+  uint32_t mask8k;
+  MapperType mapper;
+  int banks[4];
+  uint8_t* pages[4];
+  bool sccActive;                    // 9000h〜97FFh に 3Fh: 9800h〜 に SCC
+};
+Cart carts[3];                       // [1],[2] を使う
 
 //Please select one of the following options.
 #define KEYBORD_MAP (KeyboardLayout::JAPANESE)
 //#define KEYBORD_MAP (KeyboardLayout::US_ENGLISH)
 //#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
 //#define KEYBORD_MAP (KeyboardLayout::SPANISH)
+//#define KEYBORD_MAP (KeyboardLayout::ITALIAN)
 
 #define USE_FDC
 
@@ -119,8 +144,8 @@ extern "C" {
 
   extern Z80 cpu;
 
-  byte RdZ80(zword Addr);
-  void WrZ80(zword Addr, byte Value);
+  byte RdZ80Slow(zword Addr);
+  void WrZ80Slow(zword Addr, byte Value);
   byte InZ80(zword Port);
   void OutZ80(zword Port, byte Value);
   void PatchZ80(Z80* R);
@@ -128,10 +153,11 @@ extern "C" {
 
 Z80 cpu;
 
-byte IRAM_ATTR RdZ80(zword Addr) {
+// Z80.c は普通のメモリを表で直接読み書きし、表が nullptr のページだけここを呼ぶ
+byte IRAM_ATTR RdZ80Slow(zword Addr) {
   return (byte)readByte(NULL, Addr);
 }
-void IRAM_ATTR WrZ80(zword Addr, byte Value) {
+void IRAM_ATTR WrZ80Slow(zword Addr, byte Value) {
   writeByte(NULL, Addr, Value);
 }
 byte IRAM_ATTR InZ80(zword Port) {
@@ -144,23 +170,28 @@ void PatchZ80(Z80* R) {}
 
 // --- Prototypes ---
 void listROMs();
-void detectMapper(uint32_t size);
 void updateKeyboard();
 void updateFabGLSound();
 void handleDiskSelect(int drive);
-String showFileSelector(const char* title, const char* dirPath, const char* ext);
-void handleRomSelect();
+String showFileSelector(const char* title, const char* dirPath, const char* ext,
+                        const std::vector<String>& extra = {}, const String& current = "");
 void flashStatus(const char* message, int ms);
 bool loadSdToPsram(int drive, String path);
 bool savePsramToSd(int drive, String path);
 void clearCanvasDouble();
 
-enum MapperType { MAPPER_NONE,
-                  MAPPER_KONAMI,
-                  MAPPER_ASCII8,
-                  MAPPER_ASCII16,
-                  MAPPER_RTYPE };
-MapperType currentMapper = MAPPER_NONE;
+
+// FM-PAC(どちらかのスロット。動作は MSX2 版と同じ openMSX の MSXFmPac)
+//   7FF7h バンク / 7FF6h bit0 = I/O 7Ch・7Dh 有効、bit4 = SRAM の鍵を固定 / 7FF4h・7FF5h OPLL
+//   5FFEh=4Dh かつ 5FFFh=69h で 4000h〜5FFDh が SRAM
+struct FmPac {
+  uint8_t* sram;
+  uint8_t bankMask, enable, bank, r1ffe, r1fff;
+  bool sramOn;
+};
+FmPac fmpac;
+int fmpacSlot = 0;                   // 0 = なし、1 / 2
+volatile uint32_t fmpacSramWrites;   // SRAM を書き換えた回数(SD への保存の目安)
 
 // Mark III と同じ VGAController (ビューポートをDMAが直接読む方式)。
 // VGADirectController は1ラインごとの割込みで絵を作るため、モニターによって
@@ -191,32 +222,14 @@ enum class SaveMode { NONE,
                       SD_TO_PSRAM };
 volatile SaveMode currentSaveMode = SaveMode::NONE;
 
-//FDC
-struct WD2793 {
-  uint8_t Command;
-  uint8_t Status;
-  uint8_t Track;
-  uint8_t Sector;
-  uint8_t Data;
-  uint8_t Side;
-};
-struct WD2793 fdc = { 0x00, 0x80, 0x00, 0x01, 0x00, 0x00 };
+//FDC (WD2793 本体は wd2793.cpp。ここはディスクイメージの置き場所だけ)
 struct Drive {
   uint8_t* buffer = nullptr;
   size_t size = 0;
 };
 Drive drives[2];
-uint8_t current_drive = 0;
-bool disk_changed[2] = { false, false };
-uint8_t* sector_ptr = nullptr;
-bool is_reading = false;
-bool is_writing = false;
-int fdc_data_index = 0;
-bool fdc_intrq = false;
-int fdc_step_direction = -1;
-bool fdc_multi_sector = false;
-uint8_t drive_sides[2] = { 0, 0 };
-uint8_t drive_sectors[2] = { 0, 0 };
+static uint32_t fdcLines;                 // 起動からのライン数(FDC のインデックスパルス用)
+uint32_t fdcLineClock() { return fdcLines; }
 char drive_filepath[2][256];
 size_t drive_imagesize[2];
 uint8_t* disk_ram_a = nullptr;
@@ -224,9 +237,8 @@ uint8_t* disk_ram_b = nullptr;
 
 // MemoryMapper/ROM
 std::vector<String> romFiles;
-String selectedRom = "";
-uint8_t* game_rom_ptr;
-uint8_t* slot_mem[4] = { nullptr, nullptr, nullptr, nullptr };  // [3]は未使用(slot3_pageへ)
+String selectedRom = "";                // スロット1の ROM(ステートセーブのファイル名に使う)
+uint8_t* slot_mem[4] = { nullptr, nullptr, nullptr, nullptr };  // [0]=BIOS [2]=DISK.ROM(4000h〜) [1][3]は未使用
 uint8_t* slot3_page[8] = { nullptr };  // スロット3 RAM 64KB を8KB×8ページで(内部RAM優先)
 
 // 内部RAMの残量ログ(ビューポートとスロットRAMの確保確認用)
@@ -235,24 +247,21 @@ static void printHeap(const char* tag) {
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
 }
-int rom_banks[4] = { 0, 1, 2, 3 };
-uint8_t* current_pages[4];
-uint32_t rom_mask_8k;
-uint32_t rom_mask;
-uint32_t rom_size_bytes;
-long rom_size = 0;
 bool isRomListLoaded = false;
-// read_map : データ読み出し用。メモリマップド型では nullptr のページを readMemSpecial() へ回す
-//            (ソニー型ディスクROMの 7FF8h〜7FFFh のFDCレジスタを捕まえるため)
-// op_map   : 命令読み込み用。常に実メモリを指す。Z80.c が直接引く(FAST_RDOP)
-uint8_t* read_map[8];
-extern "C" { uint8_t* op_map[8]; }
-#ifdef DISK_IF_MEMORY_MAPPED
-// DISK.ROMがスロット2に載っているときだけFDCレジスタを出す。
-static bool diskRomLoaded = false;
-static uint8_t disk_mm_drive_reg = 0;
-#endif
-uint8_t* write_map[8];
+// msx1_rd_map : データ読み出し用。メモリマップド型では nullptr のページを readMemSpecial() へ回す
+//               (ソニー型ディスクROMの 7FF8h〜7FFFh のFDCレジスタを捕まえるため)
+// msx1_wr_map : 書き込み用。RAM(スロット3)のページだけ実メモリ、ほかは nullptr(writeByte で処理)
+// op_map      : 命令読み込み用。常に実メモリを指す。
+// 3つとも Z80.c が直接引く(nullptr のページだけ RdZ80Slow / WrZ80Slow を呼ぶ)
+extern "C" { uint8_t* msx1_rd_map[8]; uint8_t* msx1_wr_map[8]; uint8_t* op_map[8]; }
+// DISK.ROM の場所: 0 = 無し、2 = スロット2、3 = スロット3-1(スロット2にカートリッジを挿したとき。
+// このときだけスロット3を拡張スロットにする: 3-0 = RAM、3-1 = DISK.ROM)
+static int diskPrim = 0;
+static bool slot3Expanded = false;
+static uint8_t ssr3 = 0;                 // スロット3の拡張スロットレジスタ(FFFFh)
+static bool diskVisible = false;         // 6000h〜7FFFh にディスクROMが見えている(7FF8h〜 が FDC)
+static bool fmpacVisible = false;        // 4000h〜7FFFh に FM-PAC が見えている(7FF6h/7FF7h を読む)
+static bool sccReadable = false;         // 8000h〜9FFFh に SCC が見えている(9800h〜 の波形を読む)
 uint8_t dummy_page[8192];
 
 //psg scc
@@ -263,7 +272,6 @@ int8_t scc_waveform[5][32] = { 0 };
 uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };  //6ch for converting each PSG ch to 2 SCC chs.
 uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_enable;
-bool scc_active = false;
 bool psg2scc = false;
 static const int BUFFER_SIZE = 256;
 const uint8_t SCC_VOL_TABLE[16] = {
@@ -340,7 +348,8 @@ static volatile DisplayMode displayMode = DisplayMode::UI;
 static constexpr uint8_t UI_BLACK = 0xC0;  // 0xC0 | 0x00
 static constexpr uint8_t UI_WHITE = 0xFF;  // 0xC0 | 0x3F
 static constexpr uint8_t UI_BLUE = 0xF0;   // 0xC0 | 0x30  dark blue background
-static constexpr uint8_t UI_CYAN = 0xFD;   // 0xC0 | 0x3D  selected item highlight
+static constexpr uint8_t UI_CYAN = 0xFD;   // 0xC0 | 0x3D  folder
+static constexpr uint8_t UI_YELLOW = 0xCF; // 0xC0 | 0x0F  selected item
 static constexpr uint8_t UI_GRAY = 0xEA;   // 0xC0 | 0x2A
 
 namespace fabgl { extern const FontInfo FONT_8x8; }
@@ -677,95 +686,152 @@ private:
 };
 AY38910Generator psgGen;
 
+// ---------------------------------------------------------------------------
+//  メモリマップ
+//   スロット0 = BIOS、1 / 2 = カートリッジ(ROM / SCC / FM-PAC)か DISK.ROM、3 = RAM 64KB。
+//   スロット2 にカートリッジを挿して Disk BIOS も使うときは、スロット3を拡張して 3-1 に DISK.ROM。
+// ---------------------------------------------------------------------------
+static inline uint8_t* diskRomPage(int page) {   // page 2 / 3 = 4000h / 6000h
+  return &slot_mem[2][page * 0x2000];
+}
+
 void updateMemoryMap() {
   for (int page = 0; page < 8; page++) {
-    int msx_page16 = page >> 1;
-    int slot = (slot_reg >> (msx_page16 * 2)) & 0x03;
-
-    read_map[page] = dummy_page;
-    write_map[page] = nullptr;
-
+    int sh = (page >> 1) * 2;
+    int slot = (slot_reg >> sh) & 0x03;
+    uint8_t* rdp = nullptr;
+    uint8_t* wrp = nullptr;
     switch (slot) {
       case 0:
-        if (page < 4) {
-          read_map[page] = &slot_mem[0][page * 0x2000];
-        }
+        if (page < 4) rdp = &slot_mem[0][page * 0x2000];
         break;
-
       case 1:
-        if (page >= 2 && page <= 5) {
-          read_map[page] = current_pages[page - 2];
-        }
-        break;
-
       case 2:
-        if (page == 2) read_map[page] = &slot_mem[2][0x4000];
-        if (page == 3) read_map[page] = &slot_mem[2][0x6000];
-        if (page == 4) read_map[page] = &slot_mem[2][0x8000];
-        if (page == 5) read_map[page] = &slot_mem[2][0xA000];
+        if (slot == diskPrim) { if (page == 2 || page == 3) rdp = diskRomPage(page); }
+        else if (page >= 2 && page <= 5) rdp = carts[slot].pages[page - 2];
         break;
-
-      case 3:
-        read_map[page] = slot3_page[page];
-        write_map[page] = slot3_page[page];
+      case 3: {
+        int sub = slot3Expanded ? (ssr3 >> sh) & 3 : 0;
+        if (sub == 0) rdp = wrp = slot3_page[page];
+        else if (sub == 1 && diskPrim == 3 && (page == 2 || page == 3)) rdp = diskRomPage(page);
         break;
+      }
     }
-    op_map[page] = read_map[page];
+    msx1_rd_map[page] = op_map[page] = rdp ? rdp : dummy_page;
+    msx1_wr_map[page] = wrp;
   }
+  // データ読み出しだけ readMemSpecial() へ回すページ(命令の読み込みは op_map で直接読むので遅くならない)
+  int p1 = (slot_reg >> 2) & 3, p2 = (slot_reg >> 4) & 3, p3 = (slot_reg >> 6) & 3;
+  int sub1 = (p1 == 3 && slot3Expanded) ? (ssr3 >> 2) & 3 : 0;
 #ifdef DISK_IF_MEMORY_MAPPED
-  // ソニー型ディスクROMが 4000h〜7FFFh に見えている間だけ、6000h〜7FFFh の
-  // データ読み出しを readMemSpecial() へ回す(7FF8h〜7FFFh がFDCレジスタ)。
-  // 命令の読み込みは op_map で常に直接読むので、ディスクROMのコード実行は遅くならない。
-  if (diskRomLoaded && ((slot_reg >> 2) & 0x03) == 2) read_map[3] = nullptr;
+  // ソニー型ディスクROM(6000h〜7FFFh。7FF8h〜7FFFh がFDCレジスタ)
+  diskVisible = diskPrim && ((diskPrim == p1 && p1 != 3) || (diskPrim == 3 && p1 == 3 && sub1 == 1));
+#else
+  diskVisible = false;
 #endif
+  fmpacVisible = fmpacSlot && p1 == fmpacSlot;             // FM-PAC の 7FF6h / 7FF7h
+  if (diskVisible || fmpacVisible) msx1_rd_map[3] = nullptr;
+  sccReadable = (p2 == 1 || p2 == 2) && p2 != diskPrim && carts[p2].sccActive;   // SCC の波形メモリ
+  if (sccReadable) msx1_rd_map[4] = nullptr;
+  // 拡張したスロット3の FFFFh は拡張スロットレジスタ(読むと反転値)。3-0 の RAM のときは
+  // RAM の FFFFh に反転値を置いておく(書き込みは Z80.c が FFFFh だけ WrZ80Slow へ回す)
+  if (slot3Expanded && p3 == 3) {
+    if (((ssr3 >> 6) & 3) == 0) slot3_page[7][0x1FFF] = (uint8_t)~ssr3;
+    else msx1_rd_map[7] = nullptr;
+  }
 }
 
-inline void updateBankPointer(int page_idx, uint8_t v) {
-  rom_banks[page_idx] = v;
-  current_pages[page_idx] = &game_rom_ptr[((uint32_t)v & rom_mask_8k) << 13];
+// カートリッジのバンク(8KB 単位)
+static void cartSetBank(int s, int page_idx, int v) {
+  Cart& c = carts[s];
+  c.banks[page_idx] = v;
+  c.pages[page_idx] = c.rom ? &c.rom[((uint32_t)v & c.mask8k) << 13] : nullptr;
+}
+
+static void initMegaROM(int s) {
+  Cart& c = carts[s];
+  c.sccActive = false;
+  switch (c.mapper) {
+    case MAPPER_ASCII8:
+      for (int i = 0; i < 4; i++) cartSetBank(s, i, 0);
+      break;
+    case MAPPER_ASCII16:
+      cartSetBank(s, 0, 0); cartSetBank(s, 1, 1); cartSetBank(s, 2, 0); cartSetBank(s, 3, 1);
+      break;
+    case MAPPER_RTYPE:
+      cartSetBank(s, 0, 46); cartSetBank(s, 1, 47); cartSetBank(s, 2, 0); cartSetBank(s, 3, 1);
+      break;
+    case MAPPER_SCC:
+      for (int i = 0; i < 4; i++) c.pages[i] = nullptr;
+      break;
+    case MAPPER_FMPAC:
+      fmpac.enable = fmpac.bank = fmpac.r1ffe = fmpac.r1fff = 0;
+      fmpac.sramOn = false;
+      cartSetBank(s, 0, 0); cartSetBank(s, 1, 1);
+      c.pages[2] = c.pages[3] = nullptr;
+      break;
+    default:
+      for (int i = 0; i < 4; i++) cartSetBank(s, i, i);
+      break;
+  }
+}
+
+// 起動時: スロット s にカートリッジを入れる(rom は 2 のべき乗の大きさに切り上げてあること)
+static void cartInsert(int s, uint8_t* rom, uint32_t size, MapperType m) {
+  Cart& c = carts[s];
+  memset(&c, 0, sizeof(c));
+  c.rom = rom;
+  c.mapper = m;
+  uint32_t banks = size >> 13;
+  c.mask8k = banks ? banks - 1 : 0;
+  if (m == MAPPER_FMPAC) {
+    fmpacSlot = s;
+    uint32_t b16 = size >> 14;
+    fmpac.bankMask = (uint8_t)(b16 > 1 ? b16 - 1 : 0);
+  }
+  initMegaROM(s);
+}
+
+// ---- FM-PAC ----
+static void fmpacUpdatePages() {
+  Cart& c = carts[fmpacSlot];
+  if (fmpac.sramOn) { c.pages[0] = fmpac.sram; c.pages[1] = nullptr; }
+  else {
+    int b = (fmpac.bank & fmpac.bankMask) * 2;
+    cartSetBank(fmpacSlot, 0, b);
+    cartSetBank(fmpacSlot, 1, b + 1);
+  }
   updateMemoryMap();
 }
-
-void initMegaROM() {
-  rom_mask_8k = (rom_size / 8192) - 1;
-
-  switch (currentMapper) {
-    case MAPPER_KONAMI:
-      updateBankPointer(0, 0);
-      updateBankPointer(1, 1);
-      updateBankPointer(2, 2);
-      updateBankPointer(3, 3);
-      break;
-
-    case MAPPER_ASCII8:
-      updateBankPointer(0, 0);
-      updateBankPointer(1, 0);
-      updateBankPointer(2, 0);
-      updateBankPointer(3, 0);
-      break;
-
-    case MAPPER_ASCII16:
-      updateBankPointer(0, 0);
-      updateBankPointer(1, 1);
-      updateBankPointer(2, 0);
-      updateBankPointer(3, 1);
-      break;
-
-    case MAPPER_RTYPE:
-      current_pages[0] = &game_rom_ptr[46 * 8192];
-      current_pages[1] = &game_rom_ptr[47 * 8192];
-      current_pages[2] = &game_rom_ptr[0 * 8192];
-      current_pages[3] = &game_rom_ptr[1 * 8192];
-      updateMemoryMap();
-      break;
-
-    case MAPPER_NONE:
+static void fmpacCheckSram() {
+  bool on = fmpac.sram && fmpac.r1ffe == 0x4D && fmpac.r1fff == 0x69;
+  if (on == fmpac.sramOn) return;
+  fmpac.sramOn = on;
+  if (on) { fmpac.sram[0x1FFE] = 0x4D; fmpac.sram[0x1FFF] = 0x69; }   // 読むと鍵の値が見える
+  fmpacUpdatePages();
+}
+void fmWrite(int port, uint8_t v);
+static void fmpacWrite(uint16_t a, uint8_t v) {
+  if (a < 0x4000 || a >= 0x8000) return;
+  uint16_t o = a & 0x3FFF;
+  switch (o) {
+    case 0x1FFE: case 0x1FFF:
+      if (!(fmpac.enable & 0x10)) {
+        if (o == 0x1FFE) fmpac.r1ffe = v; else fmpac.r1fff = v;
+        fmpacCheckSram();
+      }
+      return;
+    case 0x3FF4: case 0x3FF5: fmWrite(o & 1, v); return;
+    case 0x3FF6:
+      fmpac.enable = v & 0x11;
+      if (fmpac.enable & 0x10) { fmpac.r1ffe = fmpac.r1fff = 0; fmpacCheckSram(); }
+      return;
+    case 0x3FF7:
+      if ((v & 3) != fmpac.bank) { fmpac.bank = v & 3; fmpacUpdatePages(); }
+      return;
     default:
-      updateBankPointer(0, 0);
-      updateBankPointer(1, 1);
-      updateBankPointer(2, 2);
-      updateBankPointer(3, 3);
-      break;
+      if (fmpac.sramOn && o < 0x1FFE && fmpac.sram[o] != v) { fmpac.sram[o] = v; fmpacSramWrites++; }
+      return;
   }
 }
 
@@ -785,67 +851,15 @@ bool loadSdToPsram(int drive, String path) {
   if (!f) return false;
   size_t readSize = f.read(drives[drive].buffer, 720 * 1024);
   f.close();
+  if (readSize == 0) return false;
 
   strncpy(drive_filepath[drive], path.c_str(), sizeof(drive_filepath[drive]) - 1);
   drive_filepath[drive][sizeof(drive_filepath[drive]) - 1] = '\0';  // 終端文字を保証
   drive_imagesize[drive] = readSize;
-
-  uint8_t mediaByte = drives[drive].buffer[0x15];
-  uint8_t sectorsPerTrack = 9;
-  uint8_t sides = 2;
-
-  switch (mediaByte) {
-    case 0xF8:  // 1DD
-      sectorsPerTrack = 9;
-      sides = 1;
-      break;
-    case 0xF9:  // 2DD
-      sectorsPerTrack = 9;
-      sides = 2;
-      break;
-    case 0xFA:  // 1DD (8 sectors)
-      sectorsPerTrack = 8;
-      sides = 1;
-      break;
-    case 0xFB:  // 2DD (8 sectors)
-      sectorsPerTrack = 8;
-      sides = 2;
-      break;
-    case 0xFC:  // 1D (40 tracks)
-      sectorsPerTrack = 9;
-      sides = 1;
-      break;
-    case 0xFD:  // 2D (40 tracks)
-      sectorsPerTrack = 9;
-      sides = 2;
-      break;
-    case 0xFE:  // 1D (8 sectors)
-      sectorsPerTrack = 8;
-      sides = 1;
-      break;
-    case 0xFF:  // 2D (8 sectors)
-      sectorsPerTrack = 8;
-      sides = 2;
-      break;
-    default:
-      if (readSize <= 368640) {
-        sides = 1;
-        sectorsPerTrack = 9;
-      } else {
-        sides = 2;
-        sectorsPerTrack = 9;
-      }
-      break;
-  }
-
-  drive_sides[drive] = sides;
-  drive_sectors[drive] = sectorsPerTrack;
-  fdc.Track = 0;
-  fdc.Sector = 1;
-  disk_changed[drive] = true;
   drives[drive].size = readSize;
-
-  return (readSize > 0);
+  // 形式(片面/両面、8/9セクタ)の判定と、入れ替えの知らせ(DSKCHG)は wd2793.cpp が行う
+  wd2793SetDisk(drive, drives[drive].buffer, readSize);
+  return true;
 }
 
 bool savePsramToSd(int drive) {
@@ -864,134 +878,6 @@ bool savePsramToSd(int drive) {
   return false;
 }
 
-void executeWD2793Command(uint8_t cmd) {
-  // WD2793: INTRQ はステータス読み出しか、新しいコマンドの書き込みで下がる。
-  // 前のコマンドのINTRQが残っていると、完了待ちのBIOSが「即完了」と誤認する。
-  fdc_intrq = false;
-  fdc.Command = cmd;
-  fdc_multi_sector = (cmd & 0x10) != 0;
-
-  bool disk_inserted = (disk_changed[current_drive]);
-  is_reading = false;
-  is_writing = false;
-  fdc_data_index = 0;
-
-  // --- Type IV: Force Interrupt (1101 xxxx) ---
-  if ((cmd & 0xF0) == 0xD0) {
-    fdc.Status = 0x00;
-    if (!disk_inserted) fdc.Status |= 0x80;
-    if (fdc.Track == 0) fdc.Status |= 0x04;  // Track 00フラグ
-
-    fdc_intrq = true;
-    return;
-  }
-
-  // --- Type I: Restore, Seek, Step (0xxx xxxx) ---
-  if ((cmd & 0x80) == 0) {
-    is_reading = false;
-    is_writing = false;
-
-    bool update_track = (cmd & 0x10) != 0;
-    uint8_t op = cmd & 0xE0;
-
-    if (op == 0x00) {  // Restore / Seek
-      if ((cmd & 0x10) == 0) {
-        fdc.Track = 0;
-        fdc_step_direction = -1;
-      } else {
-        fdc.Track = fdc.Data;
-      }
-    } else if (op == 0x20) {  // Step
-      if (update_track) {
-        if (fdc_step_direction == 1 && fdc.Track < 83) fdc.Track++;
-        else if (fdc_step_direction == -1 && fdc.Track > 0) fdc.Track--;
-      }
-    } else if (op == 0x40) {  // Step-In
-      fdc_step_direction = 1;
-      if (update_track && fdc.Track < 83) fdc.Track++;
-    } else if (op == 0x60) {  // Step-Out
-      fdc_step_direction = -1;
-      if (update_track && fdc.Track > 0) fdc.Track--;
-    }
-
-    uint8_t s = 0;
-    if (!disk_changed[current_drive]) s |= 0x80;
-    if (fdc.Track == 0) s |= 0x04;
-    fdc.Status = s;
-    fdc_intrq = true;
-    return;
-  }
-
-  // --- Type II: Read/Write Sector (10xx xxxx) ---
-  if ((cmd & 0xC0) == 0x80) {
-    fdc.Status = 0x01;  // Busy
-
-    if (!disk_inserted) {
-      fdc.Status |= 0x80;  // Not Ready
-      fdc.Status &= ~0x01;
-      fdc_intrq = true;
-      return;
-    }
-
-    sector_ptr = getSectorPointer(fdc.Track, fdc.Side, fdc.Sector);
-    if (sector_ptr) {
-      uint8_t op = cmd & 0xF0;
-      if (op == 0x80 || op == 0x90) {  // Read Sector (0x80-0x9F)
-        is_reading = true;
-        is_writing = false;
-      } else if (op == 0xA0 || op == 0xB0) {  // Write Sector (0xA0-0xBF)
-        is_writing = true;
-        is_reading = false;
-        is_writing = true;
-      }
-
-      fdc.Status |= 0x02;  // DRQ
-    } else {
-      fdc.Status |= 0x10;   // Record Not Found
-      fdc.Status &= ~0x01;  // Remove Busy
-      fdc_intrq = true;
-    }
-    return;
-  }
-  fdc.Status = 0x10;
-  if (!disk_inserted) fdc.Status |= 0x80;
-  fdc.Status &= ~0x01;
-  fdc_intrq = true;
-}
-
-uint8_t readWD2793Status() {
-  uint8_t s = fdc.Status;
-
-  if (is_reading || is_writing) {
-    s |= 0x01;
-
-    if (fdc_data_index < 512) {
-      s |= 0x02;
-    } else {
-      s &= ~0x03;
-      is_reading = false;
-      is_writing = false;
-    }
-  } else {
-    s &= ~0x01;  // 実行中でなければBusyは0
-  }
-
-  fdc_intrq = false;
-  // s |= (is_write_protected ? 0x40 : 0x00);
-  return s;
-}
-
-uint8_t* getSectorPointer(uint8_t track, uint8_t side, uint8_t sector) {
-  Drive& d = drives[current_drive];
-  if (!disk_changed[current_drive]) return nullptr;
-
-  uint32_t sectorIndex;
-  sectorIndex = ((uint32_t)track * drive_sides[current_drive] + side) * drive_sectors[current_drive] + (sector - 1);
-
-  uint32_t offset = sectorIndex * 512;
-  return &d.buffer[offset];
-}
-
 void loadDiskROM() {
   File file = SD.open("/disk.rom");
   if (file) {
@@ -1000,193 +886,164 @@ void loadDiskROM() {
   }
 }
 
-uint8_t readFDCData() {
-  if (is_reading && sector_ptr) {
-    uint8_t val = sector_ptr[fdc_data_index++];
-
-    if (fdc_data_index >= 512) {
-      if (fdc_multi_sector) {
-        fdc.Sector++;
-        if (fdc.Sector <= drive_sectors[current_drive]) {
-          sector_ptr = getSectorPointer(fdc.Track, fdc.Side, fdc.Sector);
-          fdc_data_index = 0;
-          fdc.Status |= 0x03;
-          return val;
-        }
-      } else {
-        fdc.Status &= ~0x03;
-        is_reading = false;
-        fdc_intrq = true;
-      }
-    } else {
-      fdc.Status |= 0x02;
-    }
-    return val;
-  }
-  return fdc.Data;
-}
-
-void writeFDCData(int val) {
-  if (is_writing && sector_ptr) {
-    sector_ptr[fdc_data_index++] = (uint8_t)val;
-
-    if (fdc_data_index >= 512) {
-      fdc.Status &= ~0x03;
-      is_writing = false;
-      fdc_intrq = true;
-    } else {
-      fdc.Status |= 0x03;
-    }
-  } else {
-    fdc.Data = val;
-  }
-}
-
-#ifdef DISK_IF_MEMORY_MAPPED
 // ---------------------------------------------------------------------------
 // ソニー(フィリップス)型 メモリマップドFDC  7FF8h〜7FFFh
 //   7FF8 R:ステータス W:コマンド / 7FF9 トラック / 7FFA セクタ / 7FFB データ
-//   7FFC bit0:サイド / 7FFD bit0-1:ドライブ(01=B,それ以外=A) bit7:モーター
-//   7FFF R: bit6=/INTRQ, bit7=/DRQ(どちらもアクティブLOW)
-//   WD2793本体は executeWD2793Command / readWD2793Status / readFDCData / writeFDCData。
+//   7FFC bit0:サイド / 7FFD bit0-1:ドライブ(0,2=A 1=B 3=なし) bit7:モーター
+//       (読むと bit2 で入れ替えを知らせる) / 7FFF R: bit6=/INTRQ, bit7=/DRQ(アクティブLOW)
+//   中身は wd2793.cpp (MSX2版と同じ)。
 // ---------------------------------------------------------------------------
-static uint8_t fdcMemRead(int r) {
-  switch (r) {
-    case 0: return readWD2793Status();
-    case 1: return fdc.Track;
-    case 2: return fdc.Sector;
-    case 3: return readFDCData();
-    case 4: return 0xFE | (fdc.Side & 1);
-    case 5: return disk_mm_drive_reg;
-    case 7: {
-      uint8_t v = 0xC0;
-      if (fdc_intrq) v &= ~0x40;
-      if ((is_reading || is_writing) && fdc_data_index < 512) v &= ~0x80;
-      return v;
-    }
-    default: return 0xFF;
-  }
+static uint8_t fdcMemRead(int r) { return wd2793Read(r); }
+static void fdcMemWrite(int r, uint8_t v) { wd2793Write(r, v); }
+
+// SCC の波形メモリの読み出し(9800h〜987Fh。そのほかは FFh)
+static uint8_t sccRead(uint16_t a) {
+  uint8_t r = a & 0xFF;
+  return r < 0x80 ? (uint8_t)(scc_waveform[r >> 5][r & 0x1F] + 128) : 0xFF;
 }
 
-static void fdcMemWrite(int r, uint8_t v) {
-  switch (r) {
-    case 0: executeWD2793Command(v); break;
-    case 1: fdc.Track = v; break;
-    case 2: fdc.Sector = v; break;
-    case 3: writeFDCData(v); break;
-    case 4: fdc.Side = v & 1; break;
-    case 5:
-      disk_mm_drive_reg = v;
-      current_drive = ((v & 0x03) == 0x01) ? 1 : 0;
-      break;
-    default: break;
-  }
-}
-
-// read_map が nullptr のページの読み出し(今はソニー型FDCのページだけ)
+// msx1_rd_map が nullptr のページの読み出し(FDC / FM-PAC のレジスタ / SCC / 拡張スロットレジスタ)
 static int IRAM_ATTR readMemSpecial(int addr) {
-  if (addr >= 0x7FF8 && addr <= 0x7FFF) return fdcMemRead(addr & 7);
+  if (diskVisible && addr >= 0x7FF8 && addr <= 0x7FFF) return fdcMemRead(addr & 7);
+  if (fmpacVisible && (addr == 0x7FF6 || addr == 0x7FF7)) return addr == 0x7FF6 ? fmpac.enable : fmpac.bank;
+  if (sccReadable && addr >= 0x9800 && addr <= 0x9FFF) {
+    const Cart& c = carts[(slot_reg >> 4) & 3];
+    if (c.mapper != MAPPER_KONAMI || addr <= 0x98FF) return sccRead(addr);   // (K) は 9800h〜98FFh、SCC は 256 バイトごとのミラー
+  }
+  if (addr == 0xFFFF && slot3Expanded && (slot_reg >> 6) == 3) return (uint8_t)~ssr3;
   return op_map[addr >> 13][addr & 0x1FFF];
 }
 
 // 通常は表を1回引くだけ。nullptr(=捕まえるページ)のときだけ分岐先へ。
 inline int IRAM_ATTR readByte(void* self, int addr) {
-  const uint8_t* p = read_map[addr >> 13];
+  const uint8_t* p = msx1_rd_map[addr >> 13];
   if (__builtin_expect(p != nullptr, 1)) return p[addr & 0x1FFF];
   return readMemSpecial(addr);
 }
-#else
-// I/Oポート型のFDCはreadIO/writeIOで処理するので、メモリ読み出しは表を引くだけ(分岐なし)。
-inline int IRAM_ATTR readByte(void* self, int addr) {
-  return read_map[addr >> 13][addr & 0x1FFF];
+
+// SCC への書き込み(a は 9800h〜98FFh)。波形は読み出し用にも使う
+static void sccWrite(uint16_t a, uint8_t val) {
+  if (a < 0x9880) {
+    int ch_idx = (a - 0x9800) >> 5;
+    scc_waveform[ch_idx][a & 0x1F] = (int8_t)((int)val - 128);
+  } else if (a < 0x98E0) {
+    int reg = a & 0x0F;
+    if (reg < 0x0A) {
+      int ch_idx = reg >> 1;
+      if (reg & 1) scc_f[ch_idx] = (scc_f[ch_idx] & 0x00FF) | ((val & 0x0F) << 8);
+      else scc_f[ch_idx] = (scc_f[ch_idx] & 0x0F00) | (val & 0xFF);
+    } else if (reg < 0x0F) {
+      scc_v[reg - 0x0A] = val & 0x0F;
+    } else {
+      scc_enable = val & 0x1F;
+    }
+  }
 }
-#endif
+
+// カートリッジ(スロット s)への書き込み: バンク切り替え・SCC・FM-PAC
+static void cartWrite(int s, uint16_t a, uint8_t val) {
+  Cart& c = carts[s];
+  if ((uint16_t)(a - 0x4000) >= 0x8000) return;
+  switch (c.mapper) {
+    case MAPPER_KONAMI:
+      if (c.sccActive && a >= 0x9800 && a <= 0x98FF) { sccWrite(a, val); return; }
+      if (a >= 0x9000 && a <= 0x97FF) c.sccActive = ((val & 0x3F) == 0x3F);
+      cartSetBank(s, (a - 0x4000) >> 13, val);
+      break;
+    case MAPPER_SCC:                         // ROM の無い SCC: 9000h〜97FFh に 3Fh で 9800h〜9FFFh に SCC
+      if (a >= 0x9800 && a <= 0x9FFF) { if (c.sccActive) sccWrite(0x9800 | (a & 0xFF), val); return; }
+      if (a >= 0x9000 && a <= 0x97FF) c.sccActive = ((val & 0x3F) == 0x3F);
+      else return;
+      break;
+    case MAPPER_ASCII8:
+      if (a >= 0x6000 && a <= 0x7FFF) cartSetBank(s, (a >> 11) & 3, val);
+      else return;
+      break;
+    case MAPPER_ASCII16:
+      if (a >= 0x6000 && a <= 0x67FF) { cartSetBank(s, 0, val << 1); cartSetBank(s, 1, (val << 1) + 1); }
+      else if (a >= 0x7000 && a <= 0x77FF) { cartSetBank(s, 2, val << 1); cartSetBank(s, 3, (val << 1) + 1); }
+      else return;
+      break;
+    case MAPPER_RTYPE:
+      if (a >= 0x7000 && a <= 0x7FFF) { uint8_t b = (val % 24) * 2; cartSetBank(s, 2, b); cartSetBank(s, 3, b + 1); }
+      else return;
+      break;
+    case MAPPER_FMPAC:
+      fmpacWrite(a, val);
+      return;
+    default:
+      return;
+  }
+  updateMemoryMap();
+}
 
 inline void IRAM_ATTR writeByte(void* self, int addr, int val) {
   uint16_t a = (uint16_t)addr;
-  uint8_t* ptr = write_map[a >> 13];
+  uint8_t* ptr = msx1_wr_map[a >> 13];
   int slot = (slot_reg >> ((a >> 13) & 0x06)) & 0x03;
 
   if (slot == 3) {
-    ptr[a & 0x1FFF] = (uint8_t)val;
-  } else {
-    if (slot == 1 && (uint16_t)(a - 0x4000) < 0x8000) {
-      int b_idx;
-      switch (currentMapper) {
-        case MAPPER_KONAMI:
-          if (scc_active && a >= 0x9800 && a <= 0x98FF) {
-            if (a < 0x9880) {
-              int ch_idx = (a - 0x9800) >> 5;
-              scc_waveform[ch_idx][a & 0x1F] = (int8_t)((int)val - 128);
-            } else if (a < 0x98E0) {
-              int reg = a & 0x0F;
-
-              if (reg < 0x0A) {
-                int ch_idx = reg >> 1;
-                if (reg & 1) scc_f[ch_idx] = (scc_f[ch_idx] & 0x00FF) | ((val & 0x0F) << 8);
-                else scc_f[ch_idx] = (scc_f[ch_idx] & 0x0F00) | (val & 0xFF);
-              } else if (reg < 0x0F) {
-                scc_v[reg - 0x0A] = val & 0x0F;
-              } else {
-                scc_enable = val & 0x1F;
-              }
-            }
-            return;
-          }
-          if (a < 0x6000) {
-            updateBankPointer(0, val);
-          } else if (a < 0x8000) {
-            updateBankPointer(1, val);
-          } else if (a < 0xA000) {
-            if (a >= 0x9000 && a <= 0x97FF) {
-              scc_active = ((val & 0x3F) == 0x3F);
-            }
-            updateBankPointer(2, val);
-          } else if (a < 0xC000) {
-            updateBankPointer(3, val);
-          }
-          return;
-
-        case MAPPER_ASCII8:
-          if (a >= 0x6000 && a <= 0x7FFF) {
-            b_idx = (a >> 11) & 3;
-            updateBankPointer(b_idx, val);
-          }
-          return;
-
-        case MAPPER_ASCII16:
-          if (a >= 0x6000 && a <= 0x67FF) {
-            updateBankPointer(0, val << 1);
-            updateBankPointer(1, (val << 1) + 1);
-          } else if (a >= 0x7000 && a <= 0x77FF) {
-            updateBankPointer(2, val << 1);
-            updateBankPointer(3, (val << 1) + 1);
-          }
-          return;
-
-        case MAPPER_RTYPE:
-          if (a >= 0x7000 && a <= 0x7FFF) {
-            uint8_t bank8k = (val % 24) * 2;
-            current_pages[2] = &game_rom_ptr[bank8k * 8192];
-            current_pages[3] = &game_rom_ptr[(bank8k + 1) * 8192];
-            updateMemoryMap();
-          }
-          return;
-      }
+    if (a == 0xFFFF && slot3Expanded) {      // 拡張スロットレジスタ
+      ssr3 = (uint8_t)val;
+      updateMemoryMap();
+      return;
     }
-#ifdef DISK_IF_MEMORY_MAPPED
-    else if (slot == 2 && a >= 0x7FF8 && a <= 0x7FFF) {
-      // ソニー型FDC。DISK.ROMが無いときスロット2は空(0xFF)なので、書かれても無害。
-      fdcMemWrite(a & 7, (uint8_t)val);
-    }
-#endif
+    if (ptr) ptr[a & 0x1FFF] = (uint8_t)val;
+    else if (diskPrim == 3 && diskVisible && a >= 0x7FF8 && a <= 0x7FFF) fdcMemWrite(a & 7, (uint8_t)val);
+    return;
   }
-  return;
+  if (slot == 1 || slot == 2) {
+    if (slot == diskPrim) {
+#ifdef DISK_IF_MEMORY_MAPPED
+      if (a >= 0x7FF8 && a <= 0x7FFF) fdcMemWrite(a & 7, (uint8_t)val);   // ソニー型FDC
+#endif
+      return;
+    }
+    cartWrite(slot, a, (uint8_t)val);
+  }
 }
 
 void writeWord(void* ctx, int addr, int val) {
   writeByte(ctx, addr, val & 0xFF);
   writeByte(ctx, addr + 1, val >> 8);
+}
+
+// ---------------------------------------------------------------------------
+//  マウス(MSX2 版と同じ。openMSX の MSXMouse)
+//   ジョイスティック端子の 8 番ピン(PSG R#15 bit4 = ポート1、bit5 = ポート2)を切り替えるたびに
+//   X 上位4bit → X 下位4bit → Y 上位4bit → Y 下位4bit を R#14 の下位4bit で返す(左・上が +)。
+//   ボタンはトリガ A = 左、B = 右。
+// ---------------------------------------------------------------------------
+volatile int32_t mouse_x, mouse_y;           // loop() が PS/2 マウスの動きを積算する(右・上が +)
+volatile uint8_t mouse_buttons;              // bit0 = 左、bit1 = 右(1 = 押下)
+static int mousePort = 0;                    // 0 = なし、1 / 2
+static int mousePhase = 3;
+static int8_t mouseRelX, mouseRelY;
+static int32_t mouseLastX, mouseLastY;
+
+static void mouseStrobe() {
+  if (mousePhase == 3) {
+    int32_t x = mouse_x, y = mouse_y;
+    int dx = -(x - mouseLastX), dy = y - mouseLastY;
+    if (dx > 127) dx = 127; else if (dx < -127) dx = -127;
+    if (dy > 127) dy = 127; else if (dy < -127) dy = -127;
+    mouseRelX = (int8_t)dx; mouseRelY = (int8_t)dy;
+    mouseLastX -= dx;
+    mouseLastY += dy;
+  }
+  mousePhase = (mousePhase + 1) & 3;
+}
+
+static uint8_t mouseRead(uint8_t joy) {
+  uint8_t n;
+  switch (mousePhase) {
+    case 0:  n = (uint8_t)(mouseRelX >> 4); break;
+    case 1:  n = (uint8_t)mouseRelX; break;
+    case 2:  n = (uint8_t)(mouseRelY >> 4); break;
+    default: n = (uint8_t)mouseRelY; break;
+  }
+  uint8_t b = mouse_buttons;
+  return (uint8_t)((joy & 0xC0) | ((b & 1) ? 0 : 0x10) | ((b & 2) ? 0 : 0x20) | (n & 0x0F));
 }
 
 inline int IRAM_ATTR readIO(void* context, int port) {
@@ -1197,11 +1054,10 @@ inline int IRAM_ATTR readIO(void* context, int port) {
   }
   if (p == 0xA2) {
     if (psg_address == 14) {
-      if ((psg_regs[15] & 0x40) == 0) {
-        return (int)joy_bits1;
-      } else {
-        return (int)joy_bits2;
-      }
+      int port = (psg_regs[15] & 0x40) ? 1 : 0;
+      uint8_t joy = port ? joy_bits2 : joy_bits1;
+      if (mousePort == port + 1) return (int)mouseRead(joy);
+      return (int)joy;
     }
 
     if (psg_address == 15) {
@@ -1220,10 +1076,7 @@ inline int IRAM_ATTR readIO(void* context, int port) {
   // I/Oポート型FDC (Microsol等 D0h〜D3h、7Ch〜7Fh にも同じレジスタ)
   if ((p >= 0x7C && p <= 0x7F) || (p >= 0xD0 && p <= 0xD3)) {
     p = (p >= 0xD0) ? (p - 0x54) : p;
-    if (p == 0x7C) return readWD2793Status();
-    else if (p == 0x7D) return fdc.Track;
-    else if (p == 0x7E) return fdc.Sector;
-    else if (p == 0x7F) return (uint8_t)readFDCData();
+    if (p >= 0x7C) return wd2793Read(p - 0x7C);   // ステータス / トラック / セクタ / データ
   }
 #endif
 
@@ -1242,6 +1095,7 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
     psg_address = v & 0x0F;
     return;
   } else if (p == 0xA1) {
+    if (psg_address == 15 && mousePort && ((psg_regs[15] ^ v) & (mousePort == 1 ? 0x10 : 0x20))) mouseStrobe();   // マウスの 8 番ピン
     psg_regs[psg_address] = v;
     psgGen.writeReg(psg_address, v);
 
@@ -1293,20 +1147,22 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
     selected_row = v & 0x0F;
     return;
   }
+  if ((p == 0x7C || p == 0x7D) && fmpacSlot && (fmpac.enable & 1)) {   // FM-PAC の OPLL(7FF6h bit0 = 1 のとき)
+    fmWrite(p & 1, v);
+    return;
+  }
 #ifndef DISK_IF_MEMORY_MAPPED
   // I/Oポート型FDC (Microsol等 D0h〜D4h、7Bh〜7Fh にも同じレジスタ)
   if ((p >= 0x7B && p <= 0x7F) || (p >= 0xD0 && p <= 0xD4)) {
     p = (p >= 0xD0) ? (p - 0x54) : p;
     switch (p) {
-      case 0x7C: executeWD2793Command(val); return;
-      case 0x7D: fdc.Track = val; return;
-      case 0x7E: fdc.Sector = val; return;
-      case 0x7F: writeFDCData(val); return;
+      case 0x7C: case 0x7D: case 0x7E: case 0x7F:   // コマンド / トラック / セクタ / データ
+        wd2793Write(p - 0x7C, (uint8_t)val); return;
       case 0x80:
       case 0x7B:  // Control Register
-        if (val & 0x01) current_drive = 0;
-        else if (val & 0x02) current_drive = 1;
-        fdc.Side = (val & 0x10) ? 1 : 0;
+        if (val & 0x01) wd2793SelectDrive(0);
+        else if (val & 0x02) wd2793SelectDrive(1);
+        wd2793Write(4, (val & 0x10) ? 1 : 0);        // サイド
         break;
       default: return;
     }
@@ -1375,7 +1231,7 @@ void syncGametoPSRAM(int idx) {
   tempState.IFF = cpu.IFF;
   tempState.IRequest = cpu.IRequest;
   tempState.primary_slot = slot_reg;
-  for (int i = 0; i < 4; i++) tempState.rom_banks[i] = rom_banks[i];
+  for (int i = 0; i < 4; i++) tempState.rom_banks[i] = (uint8_t)carts[1].banks[i];
 
   memcpy(p, &tempState, sizeof(StateSaveData));
   p += sizeof(StateSaveData);
@@ -1403,10 +1259,19 @@ void syncGametoPSRAM(int idx) {
   p += sizeof(scc_v);  // 5 bytes
   memcpy(p, &scc_enable, 1);
   p += 1;
-  memcpy(p, &scc_active, 1);
+  memcpy(p, &carts[1].sccActive, 1);
   p += 1;
   memcpy(p, &psg2scc, 1);
   p += 1;
+
+  // 7. スロット2・拡張スロット・FM-PAC(古いセーブデータには無いので印を付ける)
+  memcpy(p, "S2v1", 4);
+  p += 4;
+  for (int i = 0; i < 4; i++) *p++ = (uint8_t)carts[2].banks[i];
+  *p++ = carts[2].sccActive;
+  *p++ = ssr3;
+  memcpy(p, &fmpac, sizeof(fmpac));
+  p += sizeof(fmpac);
 }
 
 void syncPSRAMtoGame(int idx) {
@@ -1472,17 +1337,36 @@ void syncPSRAMtoGame(int idx) {
   p += sizeof(scc_v);
   memcpy(&scc_enable, p, 1);
   p += 1;
-  memcpy(&scc_active, p, 1);
+  memcpy(&carts[1].sccActive, p, 1);
   p += 1;
   memcpy(&psg2scc, p, 1);
   p += 1;
 
   slot_reg = state.primary_slot;
   for (int i = 0; i < 4; i++) {
-    rom_banks[i] = state.rom_banks[i];
-    if (currentMapper == MAPPER_RTYPE && i < 2) continue;
-    updateBankPointer(i, rom_banks[i]);
+    if (carts[1].mapper == MAPPER_RTYPE && i < 2) continue;
+    if (carts[1].mapper == MAPPER_SCC || carts[1].mapper == MAPPER_FMPAC) break;
+    cartSetBank(1, i, state.rom_banks[i]);
   }
+  if (memcmp(p, "S2v1", 4) == 0) {             // スロット2・拡張スロット・FM-PAC
+    p += 4;
+    uint8_t b2[4];
+    memcpy(b2, p, 4);
+    p += 4;
+    carts[2].sccActive = *p++;
+    ssr3 = *p++;
+    uint8_t* sram = fmpac.sram;
+    memcpy(&fmpac, p, sizeof(fmpac));
+    p += sizeof(fmpac);
+    fmpac.sram = sram;                         // ポインタは今のものを使う
+    for (int i = 0; i < 4; i++) {
+      if (carts[2].mapper == MAPPER_RTYPE && i < 2) continue;
+      if (carts[2].mapper == MAPPER_SCC || carts[2].mapper == MAPPER_FMPAC) break;
+      cartSetBank(2, i, b2[i]);
+    }
+    if (fmpacSlot) fmpacUpdatePages();
+  }
+  updateMemoryMap();
 }
 
 void stateSavePSRAMtoSD(int idx) {
@@ -1523,93 +1407,171 @@ void clearCanvasDouble() {
   displayMode = DisplayMode::GAME;
 }
 
-String showFileSelector(const char* title, const char* dirPath, const char* ext) {
+// dirPath(/ROM や /DISK)の中からファイルを選ぶ。サブフォルダにも入れる。
+//   フォルダは「名前/」で一覧の上のほうに水色で出る(選んでいる項目は黄色)。Enter で入り、「../」か BackSpace で1つ上へ戻る。
+//   PageUp/PageDown で1画面送り。返す値は dirPath からの相対パス(例 "Konami/Gradius(K).rom")。ESC は ""。
+// extra: いちばん上のフォルダの一覧の先頭に足す項目(起動メニューの「なし」)。選ぶとその文字列を返す。
+// current: 最初にカーソルを置く項目(相対パス。フォルダ付きならそのフォルダから始める)。
+String showFileSelector(const char* title, const char* dirPath, const char* ext,
+                        const std::vector<String>& extra, const String& current) {
+  enum { K_UP, K_DIR, K_FILE, K_EXTRA };
+  struct Item { String name; int kind; };
   auto kb = PS2Controller.keyboard();
-
-  std::vector<String> files;
-  File dir = SD.open(dirPath);
-  if (!dir) {
-    SD.mkdir(dirPath);
-    dir = SD.open(dirPath);
-  }
-  while (File file = dir.openNextFile()) {
-    if (!file.isDirectory()) {
-      String name = file.name();
-      String lowerName = name;
-      lowerName.toLowerCase();
-      String lowerExt = String(ext);
-      lowerExt.toLowerCase();
-      if (lowerName.endsWith(lowerExt)) {
-        if (name != "MSX.ROM" && name != "DISK.ROM") files.push_back(name);
-      }
-    }
-    file.close();
-  }
-  if (files.empty()) return "";
-
-  int cursor = 0, topIndex = 0;
-  const int maxRows = 18;
-  bool isBreak = false;
-  bool redrawn = true;
+  auto byName = [](const Item &a, const Item &b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; };
+  String lowerExt = String(ext);
+  lowerExt.toLowerCase();
+  String sub = "", want = current;                 // sub: 今のフォルダ(dirPath からの相対。先頭・末尾の / なし)
+  bool isExtra = false;
+  for (const String& e : extra) if (e == current) isExtra = true;
+  int slash = current.lastIndexOf('/');
+  if (!isExtra && slash >= 0) { sub = current.substring(0, slash); want = current.substring(slash + 1); }
 
   displayMode = DisplayMode::UI;
 
-  while (true) {
-    if (redrawn) {
-      uiFillRect(0, 0, 319, 199, UI_BLUE);
-      uiText(48, 5, title, UI_WHITE, UI_BLUE);
+  for (;;) {                                       // フォルダを移るたびに一覧を作り直す
+    String path = String(dirPath) + (sub == "" ? "" : "/" + sub);
+    File dir = SD.open(path.c_str());
+    if (!dir && sub != "") { sub = ""; want = ""; continue; }   // 前に選んだフォルダが無くなっていた
+    if (!dir) {
+      SD.mkdir(dirPath);
+      dir = SD.open(dirPath);
+    }
+    std::vector<Item> dirs, files;
+    while (dir) {
+      File file = dir.openNextFile();
+      if (!file) break;
+      String name = file.name();
+      int s = name.lastIndexOf('/');                // 版によってはフルパスが返る
+      if (s >= 0) name = name.substring(s + 1);
+      if (name.length() && name[0] != '.' && name != "System Volume Information") {
+        if (file.isDirectory()) {
+          if (!(sub == "" && name == "SAVE" && strcmp(dirPath, "/ROM") == 0))   // ステートセーブ置き場は出さない
+            dirs.push_back({ name, K_DIR });
+        } else {
+          String lowerName = name;
+          lowerName.toLowerCase();
+          if (lowerName.endsWith(lowerExt) && !(sub == "" && (name == "MSX.ROM" || name == "DISK.ROM")))
+            files.push_back({ name, K_FILE });
+        }
+      }
+      file.close();
+    }
+    if (dir) dir.close();
+    std::sort(dirs.begin(), dirs.end(), byName);
+    std::sort(files.begin(), files.end(), byName);
+    std::vector<Item> items;
+    if (sub == "") for (const String& e : extra) items.push_back({ e, K_EXTRA });
+    else items.push_back({ "..", K_UP });
+    items.insert(items.end(), dirs.begin(), dirs.end());
+    items.insert(items.end(), files.begin(), files.end());
+    if (items.empty()) return "";
 
-      if (cursor < topIndex) topIndex = cursor;
-      if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
+    int cursor = 0, topIndex = 0;
+    const int maxRows = 17;
+    for (int i = 0; i < (int)items.size(); i++)
+      if (items[i].name == want) { cursor = i; break; }
+    bool isBreak = false, redrawn = true, changeDir = false;
+    // 画面全体を塗るのはフォルダに入ったときだけ。カーソルを動かしたら前と今の2行、
+    // スクロールしたら一覧の行だけ描き直す(画面の行に直接書くので、全部塗り直すとちらつく)
+    int shownTop = -1, shownCursor = -1;
+    auto drawItem = [&](int idx) {
+      int y = 27 + (idx - topIndex) * 9;
+      uiFillRect(56, y - 1, 319, y + 7, UI_BLUE);
+      if (idx < 0 || idx >= (int)items.size()) return;
+      const Item &it = items[idx];
+      bool plain = it.kind == K_FILE || it.kind == K_EXTRA;
+      String label = plain ? it.name : it.name + "/";
+      if (label.length() > 32) label = label.substring(0, 32);
+      uint8_t fg = (idx == cursor) ? UI_YELLOW : (plain ? UI_WHITE : UI_CYAN);   // 選択中=黄、フォルダ=水色
+      uiText(64, y, label.c_str(), fg, UI_BLUE);
+    };
 
-      for (int i = 0; i < maxRows && (topIndex + i) < (int)files.size(); ++i) {
-        int idx = topIndex + i;
-        uint8_t fg = (idx == cursor) ? UI_CYAN : UI_WHITE;
-        uiText(64, 25 + (i * 9), files[idx].c_str(), fg, UI_BLUE);
+    while (!changeDir) {
+      if (redrawn) {
+        if (cursor < topIndex) topIndex = cursor;
+        if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
+        if (shownTop < 0) {
+          uiFillRect(0, 0, 319, 199, UI_BLUE);
+          uiText(48, 5, title, UI_WHITE, UI_BLUE);
+          String shown = path + "/";
+          if (shown.length() > 34) shown = "..." + shown.substring(shown.length() - 31);
+          uiText(48, 15, shown.c_str(), UI_CYAN, UI_BLUE);
+        }
+        if (shownTop < 0 || topIndex != shownTop) {
+          for (int i = 0; i < maxRows; ++i) drawItem(topIndex + i);
+        } else if (cursor != shownCursor) {
+          drawItem(shownCursor);
+          drawItem(cursor);
+        }
+        shownTop = topIndex;
+        shownCursor = cursor;
+        redrawn = false;
       }
 
-      redrawn = false;
-    }
-
-    if (kb) {
-      while (kb->scancodeAvailable() > 0) {
-        int sc = kb->getNextScancode(0);
-        if (sc == 0xF0) {
-          isBreak = true;
-          continue;
-        }
-        if (sc == 0xE0) continue;
-
-        if (!isBreak) {
-          if (sc == 0x75 && cursor > 0) {
-            cursor--;
-            redrawn = true;
-          } else if (sc == 0x72 && cursor < (int)files.size() - 1) {
-            cursor++;
-            redrawn = true;
-          } else if (sc == 0x76) {  // ESC
-            clearCanvasDouble();
-            clearKeyBuffer();
-            return "";
-          } else if (sc == 0x5A) {  // ENTER
-            String res = files[cursor];
-            clearCanvasDouble();
-            return res;
+      {
+        while (!changeDir) {
+          // キーボード、なければポート1のコントローラ(JoyKeys.hpp)
+          int sc;
+          if (kb && kb->scancodeAvailable() > 0) {
+            sc = kb->getNextScancode(0);
+            if (sc == 0xF0) {
+              isBreak = true;
+              continue;
+            }
+            if (sc == 0xE0) continue;
+          } else {
+            bool e0;
+            sc = joyMenuScancode(joyMenuPoll(), &e0);
+            if (!sc) break;
           }
-        }
-        isBreak = false;
-      }
-    }
-    delay(10);
-  }
 
-  return "";
+          if (!isBreak) {
+            int n = (int)items.size();
+            if (sc == 0x75 && cursor > 0) {
+              cursor--;
+              redrawn = true;
+            } else if (sc == 0x72 && cursor < n - 1) {
+              cursor++;
+              redrawn = true;
+            } else if (sc == 0x7D) {  // PageUp
+              cursor = cursor - maxRows < 0 ? 0 : cursor - maxRows;
+              redrawn = true;
+            } else if (sc == 0x7A) {  // PageDown
+              cursor = cursor + maxRows >= n ? n - 1 : cursor + maxRows;
+              redrawn = true;
+            } else if (sc == 0x76) {  // ESC
+              clearCanvasDouble();
+              clearKeyBuffer();
+              return "";
+            } else if ((sc == 0x66 && sub != "") || (sc == 0x5A && items[cursor].kind == K_UP)) {  // 1つ上へ
+              int p = sub.lastIndexOf('/');
+              want = p >= 0 ? sub.substring(p + 1) : sub;  // 出てきたフォルダにカーソルを置く
+              sub = p >= 0 ? sub.substring(0, p) : "";
+              changeDir = true;
+            } else if (sc == 0x5A && items[cursor].kind == K_DIR) {  // フォルダに入る
+              sub = sub == "" ? items[cursor].name : sub + "/" + items[cursor].name;
+              want = "";
+              changeDir = true;
+            } else if (sc == 0x5A) {  // ENTER
+              String res = (items[cursor].kind == K_EXTRA || sub == "") ? items[cursor].name : sub + "/" + items[cursor].name;
+              clearCanvasDouble();
+              return res;
+            }
+          }
+          isBreak = false;
+        }
+      }
+      if (!changeDir) delay(10);
+    }
+  }
 }
 
+// 実行中の F9: ディスクの入れ替え(今入っているディスクのフォルダから選び始める)
 void handleDiskSelect(int drive) {
   char title[32];
   sprintf(title, "--- SELECT %c (ESC TO EXIT) ---", (drive == 0) ? 'A' : 'B');
-  String selected = showFileSelector(title, "/DISK", ".DSK");
+  String cur = strncmp(drive_filepath[drive], "/DISK/", 6) == 0 ? String(drive_filepath[drive] + 6) : String("");
+  String selected = showFileSelector(title, "/DISK", ".DSK", {}, cur);
   if (selected != "") {
     if (loadSdToPsram(drive, "/DISK/" + selected)) {
       flashStatus("LOAD SUCCESS", 1000);
@@ -1619,12 +1581,201 @@ void handleDiskSelect(int drive) {
   }
 }
 
-void handleRomSelect() {
-  String rom = showFileSelector("-- SELECT ROM (ESC TO BASIC) --", "/ROM", ".ROM");
-  if (rom == "" || rom == "BASIC (Internal)") {
-    selectedRom = "";
-  } else {
-    selectedRom = "/ROM/" + rom;
+// ---------------------------------------------------------------------------
+//  起動メニュー(MSX2版と同じ形)
+//    Slot1 / Slot2 / Disk BIOS / Disk1 / Disk2 / Mouse / Joy B1〜B3 / Run を ↑↓ で選び、Enter で変更・起動。
+//    ポート1のコントローラでも操作できる(↑↓ 選択、←→ 1画面送り、ボタン1 = 決定、ボタン2 = 取り消し)。
+//    マウスをつないだポートのコントローラはキーボードとして働く: 方向 = カーソルキー、
+//    ボタン1〜3 = Joy B1〜B3 で決めたキー(Mouse = NONE のときは働かない。JoyKeys.hpp)。
+//    Joy B1〜B3: Enter で黄色になり、次に押したキーを割り当てる。F6〜F12 で取り消し、BackSpace で NONE。
+//     SD の /JOYKEY.CFG に保存(PC-88 版と同じ操作)。
+//    選んでいる項目は反転表示。
+//    (Arduino が関数の宣言を先頭に自動で入れるので、構造体は使わずに変数で持つ)
+// ---------------------------------------------------------------------------
+static const char* ITEM_NONE = "<NONE>";
+static const char* ITEM_SCC = "<SCC>";       // ROM の無い SCC カートリッジ
+static const char* ITEM_FMPAC = "<FM-PAC>";  // FM-PAC(/FMPAC.ROM があるとき。スロット2のみ)
+static String bootSlot[2] = { "", "" };       // /ROM からの相対パス、ITEM_SCC / ITEM_FMPAC("" = なし)
+static String bootDisk[2] = { "", "" };       // /DISK からの相対パス
+static bool bootDiskBios = true, bootDiskBiosManual = false;
+static int bootMouse = 0;                     // 0 = なし、1 / 2 = ジョイスティックポート
+
+// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /JOYKEY.CFG に3バイト。
+// 前の版の1バイトのファイルはボタン3のキーとして読む)
+static const char* JOYKEY_FILE = "/JOYKEY.CFG";
+static void loadJoyKey() {
+  File f = SD.open(JOYKEY_FILE, FILE_READ);
+  if (!f) return;
+  uint8_t b[3];
+  int n = f.read(b, 3);
+  f.close();
+  auto ok = [](uint8_t v) { return v == 0xFF || (v >> 4) <= 10; };
+  if (n == 1 && ok(b[0])) joyKey[2] = b[0];
+  else if (n == 3) for (int i = 0; i < 3; i++) if (ok(b[i])) joyKey[i] = b[i];
+}
+static void saveJoyKey() {
+  File f = SD.open(JOYKEY_FILE, FILE_WRITE);
+  if (!f) return;
+  f.write(joyKey, 3);
+  f.close();
+}
+
+static bool isRomItem(const String& s) { return s != "" && s != ITEM_SCC && s != ITEM_FMPAC; }
+
+// Disk BIOS の既定: カートリッジ(ROM)だけで起動するときは外す(ワークエリアを取られて動かないゲームが
+// あるため)。ディスクを入れたとき、ROM を挿さないとき(BASIC)は入れる。Enter で切り替えたらそのまま。
+static void bootAutoDiskBios() {
+  if (bootDiskBiosManual) return;
+  bootDiskBios = !(isRomItem(bootSlot[0]) || isRomItem(bootSlot[1])) || bootDisk[0] != "" || bootDisk[1] != "";
+}
+
+static String slotLabel(const String& s) {
+  if (s == ITEM_SCC) return "SCC (NO ROM)";
+  if (s == ITEM_FMPAC) return "FM-PAC";
+  return s;
+}
+
+// 起動メニューの各行に出ている内容(選択の状態 + 文字)を覚えておき、変わった行だけ描き直す。
+// 画面の行に直接書くので、毎回全部塗り直すとちらつく。0〜9 = 項目、10 = 案内、11 = メッセージ
+static char menuShown[12][56];
+static bool menuValid = false;
+static void bootMenuInvalidate() { menuValid = false; }   // ファイル選択などで画面を上書きしたあと
+
+// capture: カーソルの Joy B1〜B3 の行がキーを待っている(黄色で表示)
+static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capture) {
+  static const int X0 = 16, X1 = 303, Y0 = 28, DY = 13;
+  static const char* mouseName[3] = { "NONE", "PORT 1", "PORT 2" };
+  if (!menuValid) {
+    uiFillRect(0, 0, 319, 199, UI_BLUE);
+    uiText(X0, 12, "MSX BOOT MENU", UI_WHITE, UI_BLUE);
+    memset(menuShown, 0, sizeof(menuShown));
+    menuValid = true;
+  }
+  for (int i = 0; i < 10; i++) {
+    char line[48];
+    switch (i) {
+      case 0: snprintf(line, sizeof(line), "Slot1    : %.24s", slotLabel(bootSlot[0]).c_str()); break;
+      case 1: snprintf(line, sizeof(line), "Slot2    : %.24s", slotLabel(bootSlot[1]).c_str()); break;
+      case 2: snprintf(line, sizeof(line), "Disk BIOS: %s", !hasDiskRom ? "OFF (NO DISK.ROM)" : bootDiskBios ? "ON" : "OFF"); break;
+      case 3: snprintf(line, sizeof(line), "Disk1    : %.24s", bootDisk[0].c_str()); break;
+      case 4: snprintf(line, sizeof(line), "Disk2    : %.24s", bootDisk[1].c_str()); break;
+      case 5: snprintf(line, sizeof(line), "Mouse    : %s", mouseName[bootMouse]); break;
+      case 6: case 7: case 8:
+        snprintf(line, sizeof(line), "Joy B%d   : %s", i - 5, (capture && i == cursor) ? "PRESS A KEY..." : msxKeyName(joyKey[i - 6]));
+        break;
+      case 9: snprintf(line, sizeof(line), "Run"); break;
+    }
+    bool sel = (i == cursor);
+    char shown[56];                                // 1 文字目 = 状態(N 通常 / S 選択 / C キー待ち)
+    snprintf(shown, sizeof(shown), "%c%s", sel ? (capture ? 'C' : 'S') : 'N', line);
+    if (strcmp(shown, menuShown[i]) == 0) continue;
+    strcpy(menuShown[i], shown);
+    int y = Y0 + i * DY;
+    uint8_t bg = !sel ? UI_BLUE : capture ? UI_YELLOW : UI_WHITE;
+    uiFillRect(X0 - 4, y - 3, X1, y + 9, bg);
+    uiText(X0, y, line, sel ? UI_BLUE : UI_WHITE, bg);
+  }
+  const char* help = capture ? "PRESS A KEY (F6-F12:CANCEL)"
+                   : (cursor >= 6 && cursor <= 8) ? "ENTER:SET KEY BS:NONE (MOUSE PAD)"
+                                                  : "UP/DOWN:SELECT ENTER:CHANGE/RUN";
+  const char* texts[2] = { help, msg ? msg : "" };
+  for (int k = 0; k < 2; k++) {
+    if (strcmp(texts[k], menuShown[10 + k]) == 0) continue;
+    snprintf(menuShown[10 + k], sizeof(menuShown[0]), "%s", texts[k]);
+    int y = k ? 200 - 20 : 200 - 34;
+    uiFillRect(X0 - 4, y - 1, 319, y + 8, UI_BLUE);
+    uiText(X0, y, texts[k], k ? UI_WHITE : UI_CYAN, UI_BLUE);
+  }
+}
+
+// 起動する内容を選ぶ(Run で戻る)。ディスクは読み込みまで行う(失敗したらメニューに戻る)
+static void bootMenu(bool hasDiskRom, bool hasFmPac) {
+  auto kb = PS2Controller.keyboard();
+  std::vector<int> items = { 0, 1 };
+#ifdef USE_FDC
+  if (hasDiskRom) { items.push_back(2); items.push_back(3); items.push_back(4); }
+#endif
+  items.push_back(5);
+  items.push_back(6);
+  items.push_back(7);
+  items.push_back(8);
+  items.push_back(9);
+  int pos = 0;
+  const char* msg = nullptr;
+  bool isBreak = false, isE0 = false, redraw = true, capture = false;
+  displayMode = DisplayMode::UI;
+  clearKeyBuffer();
+  bootMenuInvalidate();
+  for (;;) {
+    if (redraw) { bootAutoDiskBios(); bootMenuDraw(items[pos], hasDiskRom, msg, capture); redraw = false; }
+    for (;;) {
+      // キーボード、なければポート1のコントローラ(キーを割り当て中はキーボードだけ)
+      int sc;
+      bool e0;
+      if (kb && kb->scancodeAvailable() > 0) {
+        sc = kb->getNextScancode(0);
+        if (sc == 0xF0) { isBreak = true; continue; }
+        if (sc == 0xE0) { isE0 = true; continue; }
+        e0 = isE0;
+        isE0 = false;
+        if (isBreak) { isBreak = false; continue; }
+      } else if (!capture && (sc = joyMenuScancode(joyMenuPoll(), &e0)) != 0) {
+      } else break;
+      if (capture) {                           // ジョイスティックのボタンに割り当てるキー
+        uint8_t rb = e0 ? key_map_e0[sc & 0xFF] : key_map[sc & 0xFF];
+        if (rb != 0xFF) { joyKey[items[pos] - 6] = rb; saveJoyKey(); }   // MSX に無いキー(F6〜F12 など)なら取り消し
+        capture = false;
+        redraw = true;
+        continue;
+      }
+      if (sc == 0x75)      { pos = (pos + (int)items.size() - 1) % (int)items.size(); redraw = true; }
+      else if (sc == 0x72) { pos = (pos + 1) % (int)items.size(); redraw = true; }
+      else if (sc == 0x66 && items[pos] >= 6 && items[pos] <= 8) { joyKey[items[pos] - 6] = 0xFF; saveJoyKey(); redraw = true; }   // BackSpace: なし
+      else if (sc == 0x5A) {
+        int it = items[pos];
+        msg = nullptr;
+        if (it == 0 || it == 1) {
+          std::vector<String> extra = { ITEM_NONE, ITEM_SCC };
+          if (it == 1 && hasFmPac) extra.push_back(ITEM_FMPAC);
+          bootMenuInvalidate();                  // ファイル選択の画面で上書きされる
+          String sel = showFileSelector(it ? "-- SELECT ROM FOR SLOT 2 --" : "-- SELECT ROM FOR SLOT 1 --", "/ROM", ".ROM", extra,
+                                        bootSlot[it] == "" ? String(ITEM_NONE) : bootSlot[it]);
+          if (sel != "") bootSlot[it] = (sel == ITEM_NONE) ? "" : sel;
+        } else if (it == 2) {
+          bootDiskBios = !bootDiskBios;
+          bootDiskBiosManual = true;
+        } else if (it == 3 || it == 4) {
+          int d = it - 3;
+          bootMenuInvalidate();
+          String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE 2 --" : "-- SELECT DISK FOR DRIVE 1 --",
+                                        "/DISK", ".DSK", { ITEM_NONE }, bootDisk[d] == "" ? String(ITEM_NONE) : bootDisk[d]);
+          if (sel != "") bootDisk[d] = (sel == ITEM_NONE) ? "" : sel;
+        } else if (it == 5) {
+          bootMouse = (bootMouse + 1) % 3;
+        } else if (it >= 6 && it <= 8) {
+          capture = true;                      // 次に押したキーをそのボタンに割り当てる
+        } else if (it == 9) {
+          bootAutoDiskBios();
+          bootMenuDraw(it, hasDiskRom, "LOADING...", false);
+          msg = nullptr;
+#ifdef USE_FDC
+          if (hasDiskRom && bootDiskBios) {
+            for (int d = 0; d < 2 && !msg; d++)
+              if (bootDisk[d] != "" && !loadSdToPsram(d, "/DISK/" + bootDisk[d])) msg = d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
+          }
+#endif
+          if (!msg) {
+            // ステートセーブのファイル名に使う ROM(スロット1、無ければスロット2)
+            selectedRom = isRomItem(bootSlot[0]) ? "/ROM/" + bootSlot[0] : isRomItem(bootSlot[1]) ? "/ROM/" + bootSlot[1] : "";
+            return;
+          }
+        }
+        displayMode = DisplayMode::UI;           // ファイル選択から戻るとゲーム表示に切り替わっているので戻す
+        clearKeyBuffer();
+        redraw = true;
+      }
+    }
+    delay(10);
   }
 }
 
@@ -1744,6 +1895,10 @@ void updateKeyboard() {
         if (isPaused) {
           if (!isShift) {
             handleDiskSelect(0);
+            // 選択画面がキーを離した信号を読んでしまうので、押したままの扱いを消す
+            // (残すと次の F9 が1回目だけ無視される)
+            f9_held = isShift = false;
+            for (int i = 0; i < 12; i++) msx_key_matrix[i] = 0xFF;
           } else {
             savePsramToSd(0);
           }
@@ -1802,56 +1957,13 @@ void updateKeyboard() {
       } else if (isBreak) f12_held = false;
     }
 
+    // KeyboardSystem.hpp の表で MSX のマトリクスへ(E0 付き: カーソル・Home・Ins・Del・End・
+    // PageUp/Down・テンキーの / と Enter・右 Alt など)
     int row = -1, bit = -1;
-    if (!isE0) {
-      uint8_t res = key_map[sc & 0xFF];
-      if (res != 0xFF) {
-        row = res >> 4;
-        bit = res & 0x0F;
-      }
-    } else {
-      switch (sc) {
-        case 0x5A:
-          row = 7;
-          bit = 7;
-          break;  // KP ENTER
-        case 0x4A:
-          row = 2;
-          bit = 4;
-          break;  // KP /
-        case 0x75:
-          row = 8;
-          bit = 5;
-          break;  // UP
-        case 0x72:
-          row = 8;
-          bit = 6;
-          break;  // DOWN
-        case 0x6B:
-          row = 8;
-          bit = 4;
-          break;  // LEFT
-        case 0x74:
-          row = 8;
-          bit = 7;
-          break;  // RIGHT
-        case 0x71:
-          row = 8;
-          bit = 3;
-          break;  // Delete
-        case 0x70:
-          row = 8;
-          bit = 2;
-          break;  // Insert
-        case 0x6C:
-          row = 8;
-          bit = 1;
-          break;    // Home
-        case 0x69:  // End
-          row = 7;
-          bit = 6;
-          break;  // Select
-      }
+    uint8_t res = isE0 ? key_map_e0[sc & 0xFF] : key_map[sc & 0xFF];
+    if (res != 0xFF) {
+      row = res >> 4;
+      bit = res & 0x0F;
     }
 
     if (row >= 0 && row < 12) {
@@ -1864,42 +1976,198 @@ void updateKeyboard() {
   }
 }
 
+// 1バイト: bit7 = 2P、bit0〜5 = ↑↓←→ トリガA/B、bit6 = ボタン3(0 = 押下)
+// マウスをつないだポートのコントローラは、ゲームには渡さずキーを押す(JoyKeys.hpp)
 void IRAM_ATTR updateController() {
-  joy_bits1 = joy_bits2 = 0x3F;
-
+  uint8_t j1 = 0x7F, j2 = 0x7F;
   while (Serial1.available() > 0) {
     joy_bits = Serial1.read();
-    if (joy_bits & 0x80) joy_bits2 = joy_bits & 0x3F;
-    else joy_bits1 = joy_bits & 0x3F;
+    if (joy_bits & 0x80) j2 = joy_bits & 0x7F;
+    else j1 = joy_bits & 0x7F;
   }
+  joy_bits1 = (mousePort == 1 ? 0x7F : j1) & 0x3F;
+  joy_bits2 = (mousePort == 2 ? 0x7F : j2) & 0x3F;
+  joyKeysApply(mousePort == 2 ? j2 : j1, mousePort != 0, msx_key_matrix);
 }
 
-void detectMapper(const char* filename, uint32_t size) {
-  if (size <= 0x8000) {
-    currentMapper = MAPPER_NONE;
-    return;
-  }
+// マッパーはファイル名のタグで決める(自動判別はしない)
+MapperType detectMapper(const char* filename, uint32_t size) {
+  if (size <= 0x8000) return MAPPER_NONE;
+  const char* base = strrchr(filename, '/');  // フォルダ名のタグは見ない
+  String up = String(base ? base + 1 : filename);
+  up.toUpperCase();
+  if (up.indexOf("(A16)") >= 0) return MAPPER_ASCII16;
+  if (up.indexOf("(A8)") >= 0 || up.indexOf("(A)") >= 0) return MAPPER_ASCII8;
+  if (up.indexOf("(K)") >= 0) return MAPPER_KONAMI;
+  if (up.indexOf("(R)") >= 0) return MAPPER_RTYPE;
+  return MAPPER_NONE;
+}
 
-  char* upperName = strdup(filename);
-  for (int i = 0; upperName[i]; i++) {
-    upperName[i] = toupper((unsigned char)upperName[i]);
-  }
+// ---------------------------------------------------------------------------
+//  FM 音源(FM-PAC の YM2413)。MSX2 版と同じ。FM に一度も書き込まれていない間は合成しない
+//  (合成は1サンプル約12us、16384Hz でコア1の約20%を使う)。
+// ---------------------------------------------------------------------------
+class YM2413Generator : public fabgl::WaveformGenerator {
+private:
+  OPLL* opll = nullptr;
+  int16_t sampleBuffer[BUFFER_SIZE];
+  volatile int head = 0, tail = 0;
+  int lastSample = 0;
+  static const int LP_SHIFT = 2;           // 1次IIRローパス
+  // FabGL のミキサーは上限で止めないので、emu2413 の出力(全ch で ±25000 程度)を >>6 して ±250 で止める
+  static const int FM_SHIFT = 6;
+  static const int FM_CLIP = 250;
+  int32_t lpState = 0;
+  struct FMCommand { uint8_t adr, val; };
+  static const int CMD_QUEUE_SIZE = 128;
+  FMCommand cmdQueue[CMD_QUEUE_SIZE];
+  volatile int cmdHead = 0, cmdTail = 0;
 
-  if (strstr(upperName, "(A16)")) {
-    currentMapper = MAPPER_ASCII16;
-  } else if (strstr(upperName, "(A8)")) {
-    currentMapper = MAPPER_ASCII8;
-  } else if (strstr(upperName, "(A)")) {
-    currentMapper = MAPPER_ASCII8;
-  } else if (strstr(upperName, "(K)")) {
-    currentMapper = MAPPER_KONAMI;
-  } else if (strstr(upperName, "(R)")) {
-    currentMapper = MAPPER_RTYPE;
-  } else {
-    currentMapper = MAPPER_NONE;
+public:
+  volatile bool touched = false;
+  YM2413Generator() { opll = OPLL_new(3579545, 16384); }
+  void writePort(uint8_t isData, uint8_t val) {   // コア0(Z80)から呼ばれる
+    touched = true;
+    int n = (cmdHead + 1) % CMD_QUEUE_SIZE;
+    if (n != cmdTail) { cmdQueue[cmdHead] = { isData, val }; cmdHead = n; }
   }
+  void fillBuffer() {                              // コア1から呼ばれる
+    if (!opll || !touched) return;
+    while (cmdTail != cmdHead) {
+      FMCommand c = cmdQueue[cmdTail];
+      OPLL_writeIO(opll, c.adr, c.val);
+      cmdTail = (cmdTail + 1) % CMD_QUEUE_SIZE;
+    }
+    int nextHead = (head + 1) % BUFFER_SIZE;
+    while (nextHead != tail) {
+      int32_t raw = OPLL_calc(opll);
+      lpState += (raw - lpState) >> LP_SHIFT;
+      int32_t s = lpState >> FM_SHIFT;
+      if (s > FM_CLIP) s = FM_CLIP; else if (s < -FM_CLIP) s = -FM_CLIP;
+      sampleBuffer[head] = (int16_t)s;
+      head = nextHead;
+      nextHead = (head + 1) % BUFFER_SIZE;
+    }
+  }
+  int getSample() override {
+    if (head == tail) return lastSample;
+    lastSample = sampleBuffer[tail];
+    tail = (tail + 1) % BUFFER_SIZE;
+    return lastSample;
+  }
+  void setFrequency(int value) override {}
+};
+YM2413Generator* fmGen = nullptr;
 
-  free(upperName);
+void fmWrite(int port, uint8_t v) {
+  if (fmGen) fmGen->writePort(port, v);
+}
+
+// ---------------------------------------------------------------------------
+//  カートリッジの読み込み(スロット s)
+// ---------------------------------------------------------------------------
+static bool loadCartridge(int s, const String& path) {
+  File romFile = SD.open(path.c_str());
+  if (!romFile) return false;
+  uint32_t size = romFile.size();
+  Serial.printf("Loading Game ROM (slot %d): %s (%d bytes)\n", s, path.c_str(), size);
+  // 'AB' ヘッダの確認。先頭(バンク0)に加え、R-TYPEのように
+  // バンク23の先頭にヘッダを持つROMもあるため両方を見る。
+  uint8_t header0[2] = { 0, 0 }, header23[2] = { 0, 0 };
+  romFile.seek(0);
+  romFile.read(header0, 2);
+  romFile.seek(384 * 1024 - 16 * 1024);
+  romFile.read(header23, 2);
+  if (!((header0[0] == 'A' && header0[1] == 'B') || (header23[0] == 'A' && header23[1] == 'B'))) {
+    Serial.printf("Warning: No 'AB' header in [%s]! This might be a raw data or corrupted.\n", path.c_str());
+    romFile.close();
+    return false;
+  }
+  uint32_t rs = 0x2000;
+  while (rs < size) rs <<= 1;
+  uint8_t* rom = (uint8_t*)ps_malloc(rs);
+  if (!rom) { romFile.close(); return false; }
+  memset(rom, 0xFF, rs);                     // 2のべき乗に切り上げた残りは空きROM
+  romFile.seek(0);
+  romFile.read(rom, size);
+  romFile.close();
+  MapperType m = detectMapper(path.c_str(), size);
+  const char* mapperNames[] = { "NONE", "KONAMI", "ASCII8", "ASCII16", "RTYPE", "SCC", "FMPAC" };
+  Serial.printf("Mapper: %s\n", mapperNames[m]);
+  cartInsert(s, rom, rs, m);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+//  FM-PAC: /FMPAC.ROM をスロット s に。SRAM(8KB)は SD の /FMPAC.PAC に保存する
+//  (openMSX などと同じ形: "PAC2 BACKUP DATA" の 16 バイトのあとに 1FFEh バイト)。
+// ---------------------------------------------------------------------------
+static const char* FMPAC_SRAM_FILE = "/FMPAC.PAC";
+static const char FMPAC_SRAM_HEADER[17] = "PAC2 BACKUP DATA";
+
+static bool loadFmPac(int s) {
+  File f = SD.open("/FMPAC.ROM");
+  if (!f) return false;
+  uint32_t size = f.size();
+  uint32_t rs = 0x4000;
+  while (rs < size) rs <<= 1;
+  uint8_t* rom = (uint8_t*)ps_malloc(rs);
+  fmpac.sram = (uint8_t*)ps_malloc(0x2000);
+  if (!rom || !fmpac.sram) { f.close(); return false; }
+  memset(rom, 0xFF, rs);
+  f.read(rom, size);
+  f.close();
+  memset(fmpac.sram, 0xFF, 0x2000);
+  File pf = SD.open(FMPAC_SRAM_FILE, FILE_READ);
+  if (pf) {
+    char h[16];
+    if (pf.read((uint8_t*)h, 16) == 16 && memcmp(h, FMPAC_SRAM_HEADER, 16) == 0) {
+      pf.read(fmpac.sram, 0x1FFE);
+      Serial.println("FM-PAC SRAM loaded");
+    }
+    pf.close();
+  }
+  cartInsert(s, rom, rs, MAPPER_FMPAC);
+  if (!fmGen) {
+    fmGen = new YM2413Generator();
+    soundGenerator.attach(fmGen);
+    fmGen->enable(true);
+  }
+  Serial.printf("Slot %d: FM-PAC (%u bytes)\n", s, (unsigned)size);
+  return true;
+}
+
+// 書き込みが止まって 2 秒たったら SD に保存する(loop から呼ぶ)
+static void saveFmPacSramIfChanged() {
+  static uint32_t lastWrites = 0, changedAt = 0;
+  static bool pending = false;
+  if (!fmpacSlot || !fmpac.sram) return;
+  uint32_t w = fmpacSramWrites;
+  if (w != lastWrites) { lastWrites = w; changedAt = millis(); pending = true; return; }
+  if (!pending || millis() - changedAt < 2000) return;
+  pending = false;
+  File f = SD.open(FMPAC_SRAM_FILE, FILE_WRITE);
+  if (!f) return;
+  f.write((const uint8_t*)FMPAC_SRAM_HEADER, 16);
+  f.write(fmpac.sram, 0x1FFE);
+  f.close();
+}
+
+// ---------------------------------------------------------------------------
+//  PS/2 マウス(起動メニューで選んだジョイスティックポートにつなぐ)
+// ---------------------------------------------------------------------------
+static bool mouseOn = false;
+static void updateMouse() {
+  if (!mouseOn) return;
+  auto m = PS2Controller.mouse();
+  if (!m) return;
+  while (m->deltaAvailable()) {
+    MouseDelta d;
+    if (!m->getNextDelta(&d, 0)) break;
+    mouse_x += d.deltaX;                     // 右が +
+    mouse_y += d.deltaY;                     // 上が +
+    mouse_buttons = (d.buttons.left ? 1 : 0) | (d.buttons.right ? 2 : 0);
+  }
 }
 
 //M1WAIT is closer to the original hardware behavior and results in a lower CPU load.
@@ -1924,6 +2192,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     nextFrameTime += frameTimeUs;
 
     for (int i = 0; i < 262; ++i) {
+      fdcLines++;
       ExecZ80(&cpu, CPU_CYCLE_M1WAIT);
       if (i == 192) {
         frameReady = true;
@@ -2033,7 +2302,7 @@ void setup() {
       ;
   }
   // スロット3(RAM 64KB)は8KB×8ページで取る。ビューポート確保後は64KBの連続領域が
-  // まず残らないため。Z80からは read_map/write_map(8KB単位)経由なので連続である必要はない。
+  // まず残らないため。Z80からは msx1_rd_map/msx1_wr_map(8KB単位)経由なので連続である必要はない。
   {
     int internalPages = 0;
     for (int i = 0; i < 8; i++) {
@@ -2102,17 +2371,43 @@ void setup() {
 
 #ifdef USE_FDC
     initDiskPSRAM();
-    handleDiskSelect(0);
-    File diskRomFile = SD.open("/DISK.ROM");
+    bool hasDiskRom = SD.exists("/DISK.ROM");
+#else
+    bool hasDiskRom = false;
+#endif
+    bool hasFmPac = SD.exists("/FMPAC.ROM");
+    bootSlot[1] = hasFmPac ? ITEM_FMPAC : "";  // スロット2の既定は FM-PAC(MSX2 版と同じ)
+    loadJoyKey();
+    Serial1.begin(115200, SERIAL_8N1, 39, -1);   // 起動メニューもポート1のコントローラで操作できる
+    bootMenu(hasDiskRom, hasFmPac);           // スロット1/2・Disk BIOS・ディスク1/2・マウスを選ぶ(ディスクはここで読み込む)
+
+    // ---- カートリッジ(スロット1 / 2)----
+    for (int s = 1; s <= 2; s++) {
+      const String& item = bootSlot[s - 1];
+      if (item == ITEM_SCC) {
+        cartInsert(s, nullptr, 0, MAPPER_SCC);
+        Serial.printf("Slot %d: SCC cartridge (no ROM)\n", s);
+      } else if (item == ITEM_FMPAC) {
+        if (!loadFmPac(s)) Serial.println("FM-PAC load failed");
+      } else if (item != "") {
+        loadCartridge(s, "/ROM/" + item);
+      }
+    }
+
+#ifdef USE_FDC
+    // ---- DISK.ROM: 空いているスロット(2 → 1)、どちらも使っていればスロット3-1(拡張スロット)----
+    File diskRomFile;
+    if (hasDiskRom && bootDiskBios) diskRomFile = SD.open("/DISK.ROM");
     if (diskRomFile) {
       size_t size = diskRomFile.size();
       if (size > 0x4000) size = 0x4000;  // 通常16KB
       diskRomFile.read(&slot_mem[2][0x4000], size);
-      diskRomFile.read(&slot_mem[2][0x8000], size);
       diskRomFile.close();
-      Serial.printf("DiskROM Magic: %02X %02X\n", slot_mem[2][0x4000], slot_mem[2][0x4001]);
+      diskPrim = bootSlot[1] == "" ? 2 : bootSlot[0] == "" ? 1 : 3;
+      slot3Expanded = (diskPrim == 3);
+      Serial.printf("DiskROM Magic: %02X %02X in slot %s\n", slot_mem[2][0x4000], slot_mem[2][0x4001],
+                    diskPrim == 3 ? "3-1 (slot 3 expanded)" : diskPrim == 2 ? "2" : "1");
 #ifdef DISK_IF_MEMORY_MAPPED
-      diskRomLoaded = true;
       // ソニー/フィリップス型はFDCレジスタ 7FF8h〜7FFFh を絶対番地で参照する。
       // 1つも無ければ別方式(I/Oポート型や松下型)のDISK.ROMなので警告だけ出す。
       {
@@ -2127,76 +2422,13 @@ void setup() {
       }
 #endif
     } else {
-      Serial.println("Warning: /disk.rom not found. FDD will be disabled.");
+      Serial.println(hasDiskRom ? "Disk BIOS: OFF (selected in boot menu)" : "Warning: /disk.rom not found. FDD will be disabled.");
     }
 
-    fdc.Status = 0x80;
-    fdc.Track = 0;
-    fdc.Sector = 1;
+    wd2793Reset();
 #endif
-
-    handleRomSelect();
-    if (selectedRom != "" && selectedRom != "/MSX.ROM") {
-      File romFile = SD.open(selectedRom.c_str());
-      if (romFile) {
-
-        // 暫定処置: ディスクが選ばれておらずゲームROMが選択されたら、DISK.ROMを無効化する
-        if (disk_changed[0] == false) {
-          memset(slot_mem[2], 0xFF, 0x10000);
-#ifdef DISK_IF_MEMORY_MAPPED
-          diskRomLoaded = false;   // DISK.ROMを外したのでFDCレジスタも出さない
-#endif
-        }
-
-        uint32_t size = romFile.size();
-        const char* filename = romFile.name();
-        Serial.printf("Loading Game ROM: %s (%d bytes)\n", selectedRom.c_str(), size);
-
-        // 'AB' ヘッダの確認。先頭(バンク0)に加え、R-TYPEのように
-        // バンク23の先頭にヘッダを持つROMもあるため両方を見る。
-        uint8_t header0[2];
-        romFile.seek(0);
-        romFile.read(header0, 2);
-        uint8_t header23[2];
-        romFile.seek(384 * 1024 - 16 * 1024);  // バンク23の開始位置へ
-        romFile.read(header23, 2);
-
-        if ((header0[0] == 'A' && header0[1] == 'B') || (header23[0] == 'A' && header23[1] == 'B')) {
-
-          long original_size = size;
-          rom_size = 1;
-          while (rom_size < original_size) rom_size <<= 1;
-          rom_mask = rom_size - 1;
-          rom_size_bytes = rom_size;
-
-          game_rom_ptr = (uint8_t*)ps_malloc(rom_size);
-          detectMapper(filename, original_size);
-          const char* mapperNames[] = { "NONE", "KONAMI", "ASCII8", "ASCII16", "RTYPE" };
-          Serial.printf("Mapper: %s (%d)\n", mapperNames[currentMapper], currentMapper);
-
-          if (game_rom_ptr) {
-            romFile.seek(0);
-            romFile.read(game_rom_ptr, original_size);
-            if (rom_size != original_size) {
-              // 2のべき乗に切り上げた残りは 0xFF(空きROM)で埋める
-              memset(game_rom_ptr + original_size, 0xFF, rom_size - original_size);
-            }
-          }
-
-          initMegaROM();
-          Serial.println("ROM Read and Mapper Init OK!");
-
-        } else {
-          Serial.printf("Warning: No 'AB' header in [%s]! This might be a raw data or corrupted.\n", romFile.name());
-        }
-        romFile.close();
-      }
-    } else {
-      game_rom_ptr = (uint8_t*)ps_malloc(32767);
-      detectMapper("BASIC", 32767);
-      initMegaROM();
-      Serial.println("Booting in DISK BASIC mode.");
-    }
+    mousePort = bootMouse;
+    mouseOn = bootMouse != 0;
   } else {
     Serial.println("SD open failed.");
   }
@@ -2207,9 +2439,7 @@ void setup() {
   }
 
   slot_reg = 0x00;
-  for (int i = 0; i < 4; i++) {
-    rom_banks[i] = i;
-  }
+  ssr3 = 0;
   updateMemoryMap();
 
   memset(&cpu, 0, sizeof(Z80));
@@ -2241,6 +2471,7 @@ void updateAllSound() {
     for (int i = 0; i < 5; i++) {
       scc_ch[i]->fillBuffer();
     }
+    if (fmGen) fmGen->fillBuffer();
   }
 }
 
@@ -2256,6 +2487,8 @@ void loop() {
     updateAllSound();
     updateController();
     updateKeyboard();
+    updateMouse();
+    saveFmPacSramIfChanged();
   }
   updateAllSound();
 

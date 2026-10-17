@@ -13,8 +13,19 @@
 /**     changes to this file.                               **/
 /*************************************************************/
 
+/* ESP32 の Arduino は -fno-jump-tables で全体をコンパイルするので、命令の振り分け(256 通りの switch)が
+   比較と分岐を約 8 段たどる形になる。このファイルだけ分岐表を使う(表を 1 回引いて飛ぶ)。 */
+#if defined(__GNUC__) && defined(ARDUINO)
+#pragma GCC optimize("jump-tables")
+#endif
 #include "Z80.h"
 #include "Tables.h"
+/* プレフィックス命令(CB/ED/DD/FD)の処理はフラッシュに置く(ExecZ80 に埋め込まれると IRAM に入りきらない) */
+#if defined(__GNUC__)
+#define Z80_NOINLINE __attribute__((noinline))
+#else
+#define Z80_NOINLINE
+#endif
 #include <stdio.h>
 #include <esp_attr.h>
 
@@ -60,11 +71,36 @@ INLINE byte OpZ80(zword A) { return(RAM[A>>13][A&0x1FFF]); }
 
 /* ESP32版MSX: 命令の読み込み(オペコード・即値・スタック)は8KBページ表を   */
 /* 直接引く(関数呼び出しも分岐もなし)。fMSX の FAST_RDOP と同じ構成。     */
-/* データの読み出しは RdZ80() を通るので、メモリマップドI/O(ソニー型FDC)   */
-/* を捕まえられる。op_map は MSX.ino の updateMemoryMap() が保守する。     */
+/* op_map は MSX.ino の updateMemoryMap() が保守する。                      */
+/* 必ず展開する(Arduino の既定 -Os だと関数のまま残り、IRAM の ExecZ80 からフラッシュの関数を呼んでしまう) */
+#if defined(__GNUC__)
+#define Z80_FORCEINLINE static inline __attribute__((always_inline))
+#else
+#define Z80_FORCEINLINE static __inline
+#endif
 #define FAST_RDOP
 extern byte *op_map[];
-INLINE byte OpZ80(zword A) { return(op_map[A>>13][A&0x1FFF]); }
+Z80_FORCEINLINE byte OpZ80(zword A) { return(op_map[A>>13][A&0x1FFF]); }
+
+/* データの読み書きも普通のメモリは表(MSX.ino の msx1_rd_map / msx1_wr_map)を直接引く。       */
+/* 読み出しの表が nullptr のページ(ソニー型FDCのレジスタがあるページ)と、書き込みの表が        */
+/* nullptr のページ(ROM・メガROMのバンク切り替え・SCC・FDC)だけ MSX.ino の関数を呼ぶ。         */
+#define RdZ80 RDZ80
+#define WrZ80 WRZ80
+extern byte *msx1_rd_map[], *msx1_wr_map[];
+byte RdZ80Slow(zword A);
+void WrZ80Slow(zword A,byte V);
+Z80_FORCEINLINE byte RdZ80(zword A)
+{
+  const byte *P=msx1_rd_map[A>>13];
+  return(P? P[A&0x1FFF]:RdZ80Slow(A));
+}
+Z80_FORCEINLINE void WrZ80(zword A,byte V)
+{
+  byte *P=msx1_wr_map[A>>13];
+  /* FFFFh は拡張したスロット3の拡張スロットレジスタのことがあるので MSX.ino へ */
+  if(P && A!=0xFFFF) P[A&0x1FFF]=V; else WrZ80Slow(A,V);
+}
 
 /** FAST_RDOP ************************************************/
 /** With this #define not present, RdZ80() should perform   **/
@@ -73,6 +109,12 @@ INLINE byte OpZ80(zword A) { return(op_map[A>>13][A&0x1FFF]); }
 #ifndef FAST_RDOP
 #define OpZ80(A) RdZ80(A)
 #endif
+
+/* PC と残りサイクル数の置き場所。ExecZ80 の中ではローカル変数(CPU のレジスタ)に置き換え、   */
+/* 関数を呼ぶとき(プレフィックス命令・割込み・I/O)だけ R と合わせる。ほかの関数では R のまま。 */
+#define RPC (R->PC)
+#define RIC (R->ICount)
+#define Z80_IOSYNC() ((void)0)
 
 #define S(Fl)        R->AF.B.l|=Fl
 #define R(Fl)        R->AF.B.l&=~(Fl)
@@ -127,20 +169,20 @@ INLINE byte OpZ80(zword A) { return(op_map[A>>13][A&0x1FFF]); }
   WrZ80(--R->SPtr.W,R->Rg.B.h);WrZ80(--R->SPtr.W,R->Rg.B.l)
 
 #define M_CALL         \
-  J.B.l=OpZ80(R->PC.W++);J.B.h=OpZ80(R->PC.W++);         \
-  WrZ80(--R->SPtr.W,R->PC.B.h);WrZ80(--R->SPtr.W,R->PC.B.l); \
-  R->PC.W=J.W; \
+  J.B.l=OpZ80(RPC.W++);J.B.h=OpZ80(RPC.W++);         \
+  WrZ80(--R->SPtr.W,RPC.B.h);WrZ80(--R->SPtr.W,RPC.B.l); \
+  RPC.W=J.W; \
   JumpZ80(J.W)
 
-#define M_JP  J.B.l=OpZ80(R->PC.W++);J.B.h=OpZ80(R->PC.W);R->PC.W=J.W;JumpZ80(J.W)
-#define M_JR  R->PC.W+=(offset)OpZ80(R->PC.W)+1;JumpZ80(R->PC.W)
-#define M_RET R->PC.B.l=OpZ80(R->SPtr.W++);R->PC.B.h=OpZ80(R->SPtr.W++);JumpZ80(R->PC.W)
+#define M_JP  J.B.l=OpZ80(RPC.W++);J.B.h=OpZ80(RPC.W);RPC.W=J.W;JumpZ80(J.W)
+#define M_JR  RPC.W+=(offset)OpZ80(RPC.W)+1;JumpZ80(RPC.W)
+#define M_RET RPC.B.l=OpZ80(R->SPtr.W++);RPC.B.h=OpZ80(R->SPtr.W++);JumpZ80(RPC.W)
 
 #define M_RST(Ad)      \
-  WrZ80(--R->SPtr.W,R->PC.B.h);WrZ80(--R->SPtr.W,R->PC.B.l);R->PC.W=Ad;JumpZ80(Ad)
+  WrZ80(--R->SPtr.W,RPC.B.h);WrZ80(--R->SPtr.W,RPC.B.l);RPC.W=Ad;JumpZ80(Ad)
 
 #define M_LDWORD(Rg)   \
-  R->Rg.B.l=OpZ80(R->PC.W++);R->Rg.B.h=OpZ80(R->PC.W++)
+  R->Rg.B.l=OpZ80(RPC.W++);R->Rg.B.h=OpZ80(RPC.W++)
 
 #define M_ADD(Rg)      \
   J.W=R->AF.B.h+Rg;    \
@@ -336,7 +378,7 @@ enum CodesED
   DB_F8,DB_F9,DB_FA,DB_FB,DB_FC,DB_FD,DB_FE,DB_FF
 };
 
-static void CodesCB(register Z80 *R)
+static Z80_NOINLINE void CodesCB(register Z80 *R)
 {
   register byte I;
 
@@ -355,7 +397,7 @@ static void CodesCB(register Z80 *R)
   }
 }
 
-static void CodesDDCB(register Z80 *R)
+static Z80_NOINLINE void CodesDDCB(register Z80 *R)
 {
   register pair J;
   register byte I;
@@ -378,7 +420,7 @@ static void CodesDDCB(register Z80 *R)
 #undef XX
 }
 
-static void CodesFDCB(register Z80 *R)
+static Z80_NOINLINE void CodesFDCB(register Z80 *R)
 {
   register pair J;
   register byte I;
@@ -401,7 +443,7 @@ static void CodesFDCB(register Z80 *R)
 #undef XX
 }
 
-static void CodesED(register Z80 *R)
+static Z80_NOINLINE void CodesED(register Z80 *R)
 {
   register byte I;
   register pair J;
@@ -423,7 +465,7 @@ static void CodesED(register Z80 *R)
   }
 }
 
-static void CodesDD(register Z80 *R)
+static Z80_NOINLINE void CodesDD(register Z80 *R)
 {
   register byte I;
   register pair J;
@@ -450,7 +492,7 @@ static void CodesDD(register Z80 *R)
 #undef XX
 }
 
-static void CodesFD(register Z80 *R)
+static Z80_NOINLINE void CodesFD(register Z80 *R)
 {
   register byte I;
   register pair J;
@@ -515,47 +557,76 @@ int IRAM_ATTR ExecZ80(register Z80 *R,register int RunCycles)
 {
   register byte I;
   register pair J;
+  /* PC と残りサイクル数はローカル変数に置く(毎命令の R->PC / R->ICount の読み書きをなくす)。 */
+  /* R に戻すのは、R を見る関数を呼ぶとき(プレフィックス命令・割込み・I/O・デバッガ)と戻るとき */
+  pair LPC;
+  int LIC;
+#undef RPC
+#undef RIC
+#undef Z80_IOSYNC
+#define RPC LPC
+#define RIC LIC
+#define Z80_IOSYNC() (R->ICount=LIC)                       /* I/O は R->ICount でライン内の位置を見る */
+#define Z80_SAVE()   (R->PC=LPC,R->ICount=LIC)
+#define Z80_LOAD()   (LPC=R->PC,LIC=R->ICount)
 
-  for(R->ICount=RunCycles;;)
+  LPC=R->PC;
+  for(LIC=RunCycles;;)
   {
-    while(R->ICount>0)
+    while(LIC>0)
     {
 #ifdef DEBUG
       /* Turn tracing on when reached trap address */
-      if(R->PC.W==R->Trap) R->Trace=1;
+      if(LPC.W==R->Trap) R->Trace=1;
       /* Call single-step debugger, exit if requested */
       if(R->Trace)
+      {
+        Z80_SAVE();
         if(!DebugZ80(R)) return(R->ICount);
+      }
 #endif
 
       /* Read opcode and count cycles */
-      I=OpZ80(R->PC.W++);
+      I=OpZ80(LPC.W++);
       /* Count cycles */
-      R->ICount-=Cycles[I];
+      LIC-=Cycles[I];
 
       /* Interpret opcode */
       switch(I)
       {
 #include "Codes.h"
-        case PFX_CB: CodesCB(R);break;
-        case PFX_ED: CodesED(R);break;
-        case PFX_FD: CodesFD(R);break;
-        case PFX_DD: CodesDD(R);break;
+        case PFX_CB: Z80_SAVE();CodesCB(R);Z80_LOAD();break;
+        case PFX_ED: Z80_SAVE();CodesED(R);Z80_LOAD();break;
+        case PFX_FD: Z80_SAVE();CodesFD(R);Z80_LOAD();break;
+        case PFX_DD: Z80_SAVE();CodesDD(R);Z80_LOAD();break;
       }
     }
 
     /* Unless we have come here after EI, exit */
-    if(!(R->IFF&IFF_EI)) return(R->ICount);
+    if(!(R->IFF&IFF_EI)) { Z80_SAVE(); return(LIC); }
     else
     {
       /* Done with AfterEI state */
       R->IFF=(R->IFF&~IFF_EI)|IFF_1;
       /* Restore the ICount */
-      R->ICount+=R->IBackup-1;
+      LIC+=R->IBackup-1;
       /* Interrupt CPU if needed */
-      if((R->IRequest!=INT_NONE)&&(R->IRequest!=INT_QUIT)) IntZ80(R,R->IRequest);
+      if((R->IRequest!=INT_NONE)&&(R->IRequest!=INT_QUIT))
+      {
+        Z80_SAVE();
+        IntZ80(R,R->IRequest);
+        Z80_LOAD();
+      }
     }
   }
+#undef RPC
+#undef RIC
+#undef Z80_IOSYNC
+#undef Z80_SAVE
+#undef Z80_LOAD
+#define RPC (R->PC)
+#define RIC (R->ICount)
+#define Z80_IOSYNC() ((void)0)
 }
 #endif /* EXECZ80 */
 

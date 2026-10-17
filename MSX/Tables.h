@@ -13,7 +13,14 @@
 /**     changes to this file.                               **/
 /*************************************************************/
 
-static const byte Cycles[256] =
+/* ESP32: 表はフラッシュではなく内部RAMに置く(フラッシュのキャッシュは PSRAM と共用なので、  */
+/* VRAM や ROM を読むたびに追い出され、命令ごとに引くサイクル数表が遅くなっていた) */
+#ifndef Z80_TABLE_ATTR
+#include <esp_attr.h>
+#define Z80_TABLE_ATTR DRAM_ATTR
+#endif
+
+static const byte Z80_TABLE_ATTR Cycles[256] =
 {
    4,10, 7, 6, 4, 4, 7, 4, 4,11, 7, 6, 4, 4, 7, 4,
    8,10, 7, 6, 4, 4, 7, 4,12,11, 7, 6, 4, 4, 7, 4,
@@ -33,7 +40,7 @@ static const byte Cycles[256] =
    5,10,10, 4,10,11, 7,11, 5, 6,10, 4,10, 0, 7,11
 };
 
-static const byte CyclesCB[256] =
+static const byte Z80_TABLE_ATTR CyclesCB[256] =
 {
    8, 8, 8, 8, 8, 8,15, 8, 8, 8, 8, 8, 8, 8,15, 8,
    8, 8, 8, 8, 8, 8,15, 8, 8, 8, 8, 8, 8, 8,15, 8,
@@ -53,7 +60,7 @@ static const byte CyclesCB[256] =
    8, 8, 8, 8, 8, 8,15, 8, 8, 8, 8, 8, 8, 8,15, 8
 };
 
-static const byte CyclesED[256] =
+static const byte Z80_TABLE_ATTR CyclesED[256] =
 {
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -73,7 +80,7 @@ static const byte CyclesED[256] =
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-static const byte CyclesXX[256] =
+static const byte Z80_TABLE_ATTR CyclesXX[256] =
 {
    0, 0, 0, 0, 0, 0, 0, 0, 0,15, 0, 0, 0, 0, 0, 0,
    0, 0, 0, 0, 0, 0, 0, 0, 0,15, 0, 0, 0, 0, 0, 0,
@@ -93,7 +100,7 @@ static const byte CyclesXX[256] =
    0, 0, 0, 0, 0, 0, 0, 0, 0,10, 0, 0, 0, 0, 0, 0
 };
 
-static const byte CyclesXXCB[256] =
+static const byte Z80_TABLE_ATTR CyclesXXCB[256] =
 {
    0, 0, 0, 0, 0, 0,23, 0, 0, 0, 0, 0, 0, 0,23, 0,
    0, 0, 0, 0, 0, 0,23, 0, 0, 0, 0, 0, 0, 0,23, 0,
@@ -113,7 +120,7 @@ static const byte CyclesXXCB[256] =
    0, 0, 0, 0, 0, 0,23, 0, 0, 0, 0, 0, 0, 0,23, 0
 };
 
-static const byte ZSTable[256] =
+static const byte Z80_TABLE_ATTR ZSTable[256] =
 {
   Z_FLAG,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -141,7 +148,7 @@ static const byte ZSTable[256] =
   S_FLAG,S_FLAG,S_FLAG,S_FLAG,S_FLAG,S_FLAG,S_FLAG,S_FLAG
 };
 
-static const byte PZSTable[256] =
+static const byte Z80_TABLE_ATTR PZSTable[256] =
 {
   Z_FLAG|P_FLAG,0,0,P_FLAG,0,P_FLAG,P_FLAG,0,
   0,P_FLAG,P_FLAG,0,P_FLAG,0,0,P_FLAG,
@@ -186,6 +193,7 @@ static const byte PZSTable[256] =
   S_FLAG|P_FLAG,S_FLAG,S_FLAG,S_FLAG|P_FLAG
 };
 
+/* DAATable(4KB)は DAA 命令でしか引かないのでフラッシュのまま(内部RAMを4KB節約) */
 static const zword DAATable[2048] =
 {
   0x0044,0x0100,0x0200,0x0304,0x0400,0x0504,0x0604,0x0700,

@@ -6,6 +6,13 @@
 #include <string.h>    // memsetなどを使っている場合
 #include "tms9918a.h"
 
+// IRAM の描画関数から呼ぶ小さな関数は必ず展開する(-Os だとフラッシュの関数のまま呼ばれる)
+#if defined(__GNUC__)
+#define TMS_INLINE static inline __attribute__((always_inline))
+#else
+#define TMS_INLINE static __inline
+#endif
+
 uint8_t sram_framebuffer[16384] DRAM_ATTR __attribute__((aligned(4)));
 /*
  *	Sprites
@@ -116,30 +123,35 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 	}
 }
 
-static IRAM_ATTR void tms9918a_render_sprite(struct tms9918a *vdp, int y, uint8_t *sprat, uint8_t *spdat) {
+// このラインのパターン(16ドット、上位ビットが左。8x8 は上位8ビットだけ)。
+// spdat はパターンの先頭(16x16 のときは番号の下位2ビットを落としてある)
+TMS_INLINE uint16_t tms9918a_sprite_bits(struct tms9918a *vdp, int y, const uint8_t *sprat, const uint8_t *spdat) {
 	int row = *sprat;
-	uint16_t bits;
-	unsigned int width = 8;
-	unsigned int mag = vdp->reg[1] & 0x01;
-
 	if (row > 0xE0)
 		row -= 0x100;
 	row += 1;
 	row = y - row;
-	if (mag)
+	if (vdp->reg[1] & 0x01)
 		row >>= 1;
+	if ((vdp->reg[1] & 0x02) == 0)
+		return (uint16_t)(spdat[row] << 8);   // 以前は << 24 で16bitに入りきらず0になり、8x8 が出なかった
+	return (uint16_t)((spdat[row] << 8) | spdat[row + 16]);
+}
 
-	if ((vdp->reg[1] & 0x02) == 0) {
-		spdat += row;
-		width = 8;
-		bits = *spdat << 24;
-	} else {
-		spdat += row;
-		bits = *spdat << 8;
-		bits |= spdat[16];
-		width = 16;
-	}
-	tms9918a_render_slice(vdp, y, sprat, bits, width);
+static IRAM_ATTR void tms9918a_render_sprite(struct tms9918a *vdp, int y, uint8_t *sprat, uint8_t *spdat) {
+	unsigned int width = (vdp->reg[1] & 0x02) ? 16 : 8;
+	tms9918a_render_slice(vdp, y, sprat, tms9918a_sprite_bits(vdp, y, sprat, spdat), width);
+}
+
+// 衝突判定用: 16ドットのパターン → 32ドットのマスク(bit31 が左端。拡大なら各ドットを2つに)
+TMS_INLINE uint32_t tms9918a_sprite_mask(uint16_t bits, int mag) {
+	uint32_t b = bits;
+	if (!mag) return b << 16;
+	b = (b | (b << 8)) & 0x00FF00FFu;
+	b = (b | (b << 4)) & 0x0F0F0F0Fu;
+	b = (b | (b << 2)) & 0x33333333u;
+	b = (b | (b << 1)) & 0x55555555u;
+	return b | (b << 1);
 }
 
 void prepare_sprites(struct tms9918a *vdp) {
@@ -172,14 +184,37 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 	uint8_t *spdat = vdp->framebuffer + ((vdp->reg[6] & 0x07) << 11);
 	unsigned int spshft = 3;
 
+	// 16x16 のときパターン番号の下位2ビットは使わない(実機と同じ)
+	uint8_t patMask = (vdp->reg[1] & 0x02) ? 0xFC : 0xFF;
+
 	// プリスキャン済みのリストから枚数を取得
 	int count = vdp->sprite_line_count[y];
 
 	// --- スプライト描画のループ（逆順にする） ---
 	if (vdp->limit_sprites && count > 4) {
-		uint8_t fifth_idx = vdp->sprite_line_list[y][4];
-		vdp->status |= 0x40 | (fifth_idx & 0x1F);
+		// 5枚目: 5S と番号は最初に起きたものを読まれるまで保つ(以前は OR で番号が混ざっていた)
+		if (!(vdp->status & 0x40))
+			vdp->status = (vdp->status & 0xA0) | 0x40 | (vdp->sprite_line_list[y][4] & 0x1F);
 		count = 4;  // 描画は4枚で打ち切り
+	}
+
+	// 衝突(ステータス bit5): 表示するスプライトのうち2枚の「1」のドットが重なったら立てる。
+	// 色0(透明)のスプライトも数える(実機と同じ)。画面の外(x<0, x>255)のドットは数えない。
+	// どのドットにもう出ているかを 256ビットのマスクで持って重なりを調べる。
+	if (count > 1 && !(vdp->status & 0x20)) {
+		uint32_t occ[9] = { 0 };
+		int mag = vdp->reg[1] & 0x01;
+		for (int n = 0; n < count; n++) {
+			const uint8_t *sprat = sprat_base + vdp->sprite_line_list[y][n] * 4;
+			uint32_t m = tms9918a_sprite_mask(tms9918a_sprite_bits(vdp, y, sprat, spdat + ((sprat[2] & patMask) << spshft)), mag);
+			int x = sprat[1] - ((sprat[3] & 0x80) ? 32 : 0);
+			if (x < 0) { m = (x <= -32) ? 0 : (m << -x); x = 0; }
+			else if (x > 224) m &= ~(0xFFFFFFFFu >> (256 - x));
+			uint32_t w = (uint32_t)x >> 5, s = (uint32_t)x & 31;
+			uint32_t p0 = m >> s, p1 = s ? m << (32 - s) : 0;
+			if ((p0 & occ[w]) | (p1 & occ[w + 1])) { vdp->status |= 0x20; break; }
+			occ[w] |= p0; occ[w + 1] |= p1;
+		}
 	}
 
 	// 番号が大きい順（奥から手前）に描画
@@ -191,7 +226,7 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 		uint8_t foreground = sprat[3] & 0x0F;
 		if (foreground == 0) continue;
 
-		tms9918a_render_sprite(vdp, y, sprat, spdat + (sprat[2] << spshft));
+		tms9918a_render_sprite(vdp, y, sprat, spdat + ((sprat[2] & patMask) << spshft));
 	}
 }
 
