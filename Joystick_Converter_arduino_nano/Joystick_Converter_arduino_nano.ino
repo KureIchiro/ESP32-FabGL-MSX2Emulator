@@ -1,17 +1,13 @@
-struct ControllerPins {
-  uint8_t up;
-  uint8_t down;
-  uint8_t left;
-  uint8_t right;
-  uint8_t buttons[3];
-  uint8_t turbo[3];
-  uint8_t id;
-};
+// Arduino Nano (ATmega328P) Atari-style joystick -> ESP32 UART converter
+// 1 controller only version
 
-const ControllerPins controllers[] = {
-  {2, 3, 4, 5, {6, 7, 8}, {9, 10, 11}, 0},
-  {12, 13, A0, A1, {A2, A3, A4}, {A5, 0, A6}, 1}
-};
+const uint8_t PIN_UP = 2;
+const uint8_t PIN_DOWN = 3;
+const uint8_t PIN_LEFT = 4;
+const uint8_t PIN_RIGHT = 5;
+
+const uint8_t PIN_BUTTONS[3] = {6, 7, 8};
+const uint8_t PIN_TURBO[3] = {9, 10, 11};
 
 const uint32_t SERIAL_INTERVAL_MS = 12;
 const uint32_t TURBO_INTERVAL_MS = 40;
@@ -20,32 +16,27 @@ uint32_t lastSerialTick = 0;
 uint32_t lastTurboTick = 0;
 bool turboState = false;
 
-bool turboEnabled(const ControllerPins &pins, uint8_t button) {
-  if (pins.id == 1 && button == 2) {
-    return analogRead(A6) < 512;
-  }
-  return digitalRead(pins.turbo[button]) == LOW;
-}
+uint8_t readController() {
+  // Active low: ON=0, OFF=1. b7 (ID) is always 0 (Controller 1).
+  uint8_t data = 0x7F;
 
-uint8_t readController(const ControllerPins &pins) {
-  uint8_t data = 0xFF;
-
-  if (digitalRead(pins.up) == LOW) {
+  if (digitalRead(PIN_UP) == LOW) {
     data &= ~(1U << 0);
   }
-  if (digitalRead(pins.down) == LOW) {
+  if (digitalRead(PIN_DOWN) == LOW) {
     data &= ~(1U << 1);
   }
-  if (digitalRead(pins.left) == LOW) {
+  if (digitalRead(PIN_LEFT) == LOW) {
     data &= ~(1U << 2);
   }
-  if (digitalRead(pins.right) == LOW) {
+  if (digitalRead(PIN_RIGHT) == LOW) {
     data &= ~(1U << 3);
   }
 
   for (uint8_t button = 0; button < 3; ++button) {
-    const bool pressed = digitalRead(pins.buttons[button]) == LOW;
-    const bool rapidFire = turboEnabled(pins, button);
+    const bool pressed = digitalRead(PIN_BUTTONS[button]) == LOW;
+    const bool rapidFire = digitalRead(PIN_TURBO[button]) == LOW;
+    // Button 2 toggles in the opposite phase (compatible with the STM32 version).
     const bool pulseOn = (button == 1) ? !turboState : turboState;
 
     if (pressed && (!rapidFire || pulseOn)) {
@@ -53,33 +44,21 @@ uint8_t readController(const ControllerPins &pins) {
     }
   }
 
-  if (pins.id != 0) {
-    data |= 1U << 7;
-  } else {
-    data &= ~(1U << 7);
-  }
-
   return data;
 }
 
 void setup() {
-  for (const ControllerPins &pins : controllers) {
-    pinMode(pins.up, INPUT_PULLUP);
-    pinMode(pins.down, INPUT_PULLUP);
-    pinMode(pins.left, INPUT_PULLUP);
-    pinMode(pins.right, INPUT_PULLUP);
+  pinMode(PIN_UP, INPUT_PULLUP);
+  pinMode(PIN_DOWN, INPUT_PULLUP);
+  pinMode(PIN_LEFT, INPUT_PULLUP);
+  pinMode(PIN_RIGHT, INPUT_PULLUP);
 
-    for (uint8_t button = 0; button < 3; ++button) {
-      pinMode(pins.buttons[button], INPUT_PULLUP);
-      if (!(pins.id == 1 && button == 2)) {
-        pinMode(pins.turbo[button], INPUT_PULLUP);
-      }
-    }
+  for (uint8_t button = 0; button < 3; ++button) {
+    pinMode(PIN_BUTTONS[button], INPUT_PULLUP);
+    pinMode(PIN_TURBO[button], INPUT_PULLUP);
   }
 
   Serial.begin(115200);
-  UCSR0B &= ~(_BV(RXEN0) | _BV(RXCIE0));
-  pinMode(0, INPUT_PULLUP);
 }
 
 void loop() {
@@ -91,11 +70,7 @@ void loop() {
   }
 
   if (now - lastSerialTick >= SERIAL_INTERVAL_MS) {
-    const uint8_t frame[] = {
-      readController(controllers[0]),
-      readController(controllers[1])
-    };
-    Serial.write(frame, sizeof(frame));
+    Serial.write(readController());
     lastSerialTick = now;
   }
 }
