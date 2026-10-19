@@ -115,7 +115,16 @@ static int8_t  mouseRelX, mouseRelY;
 static int32_t mouseLastX, mouseLastY;
 void msx2SetMousePort(int port) { mousePort = (port == 1 || port == 2) ? port : 0; }
 
+// 最後に 8 番ピンを切り替えた時刻(ライン)。しばらく切り替えが無い(マウスとして読んでいない)ときは、
+// 方向のビットを「押していない」にする。止まっているマウスの移動量 0 はジョイスティックとして読むと
+// 全方向が押された形になり、ポート1も読むゲーム(Aleste など)でカーソルキーが効かなくなっていた
+static uint32_t mouseStrobeAt;
+static bool     mouseStrobed;
+static const uint32_t MOUSE_IDLE_LINES = 262 * 4;     // 約 4 フレーム
+
 static void mouseStrobe() {
+  mouseStrobeAt = msx2LineClock();
+  mouseStrobed = true;
   if (mousePhase == 3) {
     int32_t x = msx2_mouse_x, y = msx2_mouse_y;
     int dx = -(x - mouseLastX), dy = y - mouseLastY;  // MSX は左・上が +
@@ -136,6 +145,7 @@ static uint8_t mouseRead(uint8_t joy) {
     case 2:  n = (uint8_t)(mouseRelY >> 4); break;
     default: n = (uint8_t)mouseRelY; break;
   }
+  if (!mouseStrobed || msx2LineClock() - mouseStrobeAt > MOUSE_IDLE_LINES) n = 0x0F;   // マウスとして読まれていない
   uint8_t b = msx2_mouse_buttons;
   return (uint8_t)((joy & 0xC0) | ((b & 1) ? 0 : 0x10) | ((b & 2) ? 0 : 0x20) | (n & 0x0F));
 }
@@ -755,6 +765,7 @@ void msx2Reset() {
   for (int s = 1; s <= 2; s++) { cart[s].sccActive = false; if (cart[s].rom) cartUpdatePages(s); }
   memset(sccWave, 0, sizeof(sccWave));
   mousePhase = 3;
+  mouseStrobed = false;
   mouseLastX = msx2_mouse_x; mouseLastY = msx2_mouse_y;
   fmpac.enable = 0; fmpac.bank = 0; fmpac.r1ffe = fmpac.r1fff = 0; fmpac.sramOn = false;
   fmpacUpdatePages();

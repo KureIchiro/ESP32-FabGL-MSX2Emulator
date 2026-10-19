@@ -33,26 +33,26 @@
  *   host/      : PCでコアを動かして確認するためのテスト環境 (Arduinoはビルドしない)
  *
  *  FM音源(MSX-MUSIC)は emu2413.c / emu2413.h をこのフォルダに置くと有効になる。
- *  SDカードのルートに FMPAC.ROM があると FM-PAC をスロット2に挿した構成になり、
+ *  SDカードの /MSX2 に FMPAC.ROM があると FM-PAC をスロット2に挿した構成になり、
  *  内蔵MSX-MUSIC(MSX2PMUS.ROM)は使わない(FM-PAC にしか対応しないソフト向け)。
  *
  *  起動メニュー: Slot1 / Slot2 / Disk BIOS / Disk1 / Disk2 / Mouse / Joy B1〜B3 / Run を ↑↓ で選び Enter。
  *   ポート1のコントローラでも操作できる(↑↓ 選択、←→ 1画面送り、ボタン1 = 決定、ボタン2 = 取り消し)。
  *   Slot2 の既定は FM-PAC(FMPAC.ROM があるとき)。ほかのROMを選ぶと内蔵MSX-MUSICになる。
- *   FM-PAC の SRAM は SD の /FMPAC.PAC に自動で保存する(書き込みが止まって2秒後)。
+ *   FM-PAC の SRAM は SD の /MSX2/FMPAC.PAC に自動で保存する(書き込みが止まって2秒後)。
  *   Slot1/Slot2 の <SCC> は ROM の無い SCC カートリッジ(SD スナッチャーなどの音源。RAM は無し)。
  *   Mouse: NONE / PORT 1 / PORT 2(PS/2 マウスをそのジョイスティックポートにつなぐ)。
  *    マウスをつないだポートのコントローラはキーボードとして働く: 方向 = カーソルキー、
  *    ボタン1〜3 = Joy B1〜B3 で決めたキー(Mouse = NONE のときは働かない)。
  *   Joy B1〜B3: そのボタンで押すキー(Enter で黄色になり、次に押したキーを割り当てる。
- *    F6〜F12 で取り消し、BackSpace で NONE。SD の /JOYKEY.CFG に保存。PC-88 版の Joy B1〜B3 と同じ操作)。
+ *    F6〜F12 で取り消し、BackSpace で NONE。SD の /MSX2/JOYKEY.CFG に保存。PC-88 版の Joy B1〜B3 と同じ操作)。
  *   Disk BIOS は、カートリッジだけで起動するときは自動で OFF(Enter で手動切替)。
- *  ROM は SD の /ROM、ディスク(.DSK)は /DISK から選ぶ。中のフォルダにも入れる
+ *  BIOS などの ROM は SD の /MSX2 に置く。ゲームの ROM は /MSX2/ROM、ディスク(.DSK)は /MSX2/DISK から選ぶ。中のフォルダにも入れる
  *   (フォルダは「名前/」で表示。Enter で入る、「../」か BackSpace で戻る、PageUp/PageDown で1画面送り)。
  *  ROMのマッパーはファイル名のタグで決める: (A8)/(A) (A16) (K) (KS) (R)
  *   (K) コナミ(SCCあり/なし両用)  (KS) コナミSCC(実機どおりのアドレスのみ。メタルギア2など)
  *  実行中: F12 一時停止 / Shift+F12 リセット / 一時停止中に F10・F11 でドライブ1・2のディスク
- *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす /
+ *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす / Shift+F8 スプライトの横の枚数制限なし・あり /
  *   F6 Z80 の速さ Normal(205) → High(285) → Super(365)(1ラインのクロック数。画面下に0.5秒表示)
  *   ※ドライブ2は起動メニューで Disk2 を選んで起動したときだけつながる(実機の HB-F1XDJ と
  *     同じく、選ばなければ1ドライブで、B: は A: を使う仮想ドライブになる)
@@ -74,6 +74,9 @@
 #include "Z80.h"
 #include "KeyboardSystem.hpp"
 #include "JoyKeys.hpp"
+
+// SD カードの中の MSX2 のフォルダ(BIOS・/ROM・/DISK・設定ファイルはすべてこの下。MSX1 は /MSX1、マーク3 は /SMS)
+#define SD_ROOT "/MSX2"
 
 #if __has_include("emu2413.h")
   #include "emu2413.h"
@@ -134,7 +137,7 @@
 #define MSX2_FHD_SCAN 5
 
 // VDP: 0 = BIOS に合わせる(MSX2P.ROM なら V9958、MSX2.ROM なら V9938)  1 = V9938 固定  2 = V9958 固定
-// BIOS は /MSX2P.ROM + /MSX2PEXT.ROM (MSX2+) を探し、無ければ /MSX2.ROM + /MSX2EXT.ROM (MSX2)、
+// BIOS は SD の /MSX2 の MSX2P.ROM + MSX2PEXT.ROM (MSX2+) を探し、無ければ MSX2.ROM + MSX2EXT.ROM (MSX2)、
 // それも無ければ C-BIOS(MSX2+)。V9938 にすると、VDP の種類を見てMSX2+用の処理に切り替える
 // ソフト(スペースマンボウなど)も MSX2 用の処理(R#18 での横スクロールなど)で動く。
 #define MSX2_VDP 0
@@ -637,7 +640,7 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
     String path = String(dirPath) + (sub == "" ? "" : "/" + sub);
     File dir = SD.open(path.c_str());
     if (!dir && sub != "") { sub = ""; want = ""; continue; }   // 前に選んだフォルダが無くなっていた
-    if (!dir) { SD.mkdir(dirPath); dir = SD.open(dirPath); }
+    if (!dir) { SD.mkdir(SD_ROOT); SD.mkdir(dirPath); dir = SD.open(dirPath); }
     std::vector<Item> dirs, files;
     while (dir) {
       File file = dir.openNextFile();
@@ -749,9 +752,9 @@ static void handleDiskSelect(int d) {
   if (!diskBuf[d]) { flashStatus("NO DISK.ROM", 1000); return; }
   char title[40];
   sprintf(title, "--- SELECT DISK %d (ESC TO SKIP) ---", d + 1);
-  String cur = strncmp(diskPath[d], "/DISK/", 6) == 0 ? String(diskPath[d] + 6) : String("");   // 今のディスクから選び始める
-  String sel = showFileSelector(title, "/DISK", ".DSK", {}, cur);
-  if (sel != "") flashStatus(loadDisk(d, "/DISK/" + sel) ? "LOAD SUCCESS" : "LOAD ERROR!", 1000);
+  String cur = strncmp(diskPath[d], SD_ROOT "/DISK/", sizeof(SD_ROOT "/DISK/") - 1) == 0 ? String(diskPath[d] + sizeof(SD_ROOT "/DISK/") - 1) : String("");   // 今のディスクから選び始める
+  String sel = showFileSelector(title, SD_ROOT "/DISK", ".DSK", {}, cur);
+  if (sel != "") flashStatus(loadDisk(d, SD_ROOT "/DISK/" + sel) ? "LOAD SUCCESS" : "LOAD ERROR!", 1000);
 }
 
 static Msx2Mapper detectMapper(const char *filename, uint32_t size) {
@@ -809,9 +812,9 @@ static void bootAutoDiskBios(BootConfig &c) {
   c.diskBios = !cart || c.disk[0] != "" || c.disk[1] != "";
 }
 
-// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /JOYKEY.CFG に3バイト。
+// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /MSX2/JOYKEY.CFG に3バイト。
 // 前の版の1バイトのファイルはボタン3のキーとして読む)
-static const char *JOYKEY_FILE = "/JOYKEY.CFG";
+static const char *JOYKEY_FILE = SD_ROOT "/JOYKEY.CFG";
 static void loadJoyKey() {
   File f = SD.open(JOYKEY_FILE, FILE_READ);
   if (!f) return;
@@ -887,13 +890,13 @@ static void bootMenuDraw(const BootConfig &c, int cursor, bool hasDiskRom, const
 static const char *bootMenuApply(const BootConfig &c) {
   for (int s = 0; s < 2; s++) {
     msx2SetCartridge(s + 1, nullptr, 0, c.slot[s] == ITEM_SCC ? MSX2_MAP_SCC : MSX2_MAP_NONE);
-    if (isRomItem(c.slot[s]) && !loadCartridge("/ROM/" + c.slot[s], s + 1))
+    if (isRomItem(c.slot[s]) && !loadCartridge(SD_ROOT "/ROM/" + c.slot[s], s + 1))
       return s ? "SLOT2 ROM LOAD ERROR" : "SLOT1 ROM LOAD ERROR";
   }
   for (int d = 0; d < 2; d++) {
     if (!diskBuf[d]) continue;
     if (c.disk[d] == "") { wd2793SetDisk(d, nullptr, 0); diskPath[d][0] = 0; diskSize[d] = 0; continue; }
-    if (!loadDisk(d, "/DISK/" + c.disk[d])) return d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
+    if (!loadDisk(d, SD_ROOT "/DISK/" + c.disk[d])) return d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
   }
   return nullptr;
 }
@@ -946,7 +949,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
           if (it == 1 && hasFmPac) extra.push_back(ITEM_FMPAC);
           bootMenuInvalidate();                    // ファイル選択の画面で上書きされる
           String sel = showFileSelector(it ? "-- SELECT ROM FOR SLOT 2 --" : "-- SELECT ROM FOR SLOT 1 --",
-                                        "/ROM", ".ROM", extra, c.slot[it] == "" ? String(ITEM_NONE) : c.slot[it]);
+                                        SD_ROOT "/ROM", ".ROM", extra, c.slot[it] == "" ? String(ITEM_NONE) : c.slot[it]);
           if (sel != "") c.slot[it] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it == 2) {
           c.diskBios = !c.diskBios;
@@ -957,7 +960,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
           int d = it - 3;
           bootMenuInvalidate();
           String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE 2 --" : "-- SELECT DISK FOR DRIVE 1 --",
-                                        "/DISK", ".DSK", { ITEM_NONE }, c.disk[d] == "" ? String(ITEM_NONE) : c.disk[d]);
+                                        SD_ROOT "/DISK", ".DSK", { ITEM_NONE }, c.disk[d] == "" ? String(ITEM_NONE) : c.disk[d]);
           if (sel != "") c.disk[d] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it >= 6 && it <= 8) {
           capture = true;                          // 次に押したキーをそのボタンに割り当てる
@@ -999,12 +1002,17 @@ static void updateKeyboard() {
     if (sc == 0xE0) { isE0 = true; continue; }
     if (sc == 0x12 || sc == 0x59) isShift = !isBreak;
 
-    if (sc == 0x0A) {                                // F8: PSGをSCC波形で鳴らす
+    if (sc == 0x0A) {                                // F8: PSGをSCC波形で鳴らす / Shift+F8: スプライトの枚数制限の切り替え(MSX1 版と同じ)
       if (!isBreak && !f8_held) {
         f8_held = true;
-        psg2scc = !psg2scc;
-        if (!psg2scc) scc_enable = 0;
-        flashStatus(psg2scc ? "SCC ON" : "SCC OFF", 1000);
+        if (isShift) {
+          vdpSetSpriteNoLimit(!vdpSpriteNoLimit());
+          flashStatus(vdpSpriteNoLimit() ? "NO LIMIT SPRITES" : "LIMIT SPRITES", 1000);
+        } else {
+          psg2scc = !psg2scc;
+          if (!psg2scc) scc_enable = 0;
+          flashStatus(psg2scc ? "SCC ON" : "SCC OFF", 1000);
+        }
       } else if (isBreak) f8_held = false;
     } else if ((sc == 0x09 || sc == 0x78) && !isE0) { // F10/F11: (一時停止中) ドライブ1/2のディスク選択 / Shift:書き戻し
       int d = (sc == 0x78) ? 1 : 0;
@@ -1065,7 +1073,7 @@ static void updateController() {
   }
   msx2_joy[0] = 0x40 | ((mousePortSel == 1 ? 0x7F : j1) & 0x3F);   // bit6=1: JIS配列
   msx2_joy[1] = 0x40 | ((mousePortSel == 2 ? 0x7F : j2) & 0x3F);
-  //joyKeysApply(mousePortSel == 2 ? j2 : j1, mousePortSel != 0, msx2_key_matrix);
+  joyKeysApply(mousePortSel == 2 ? j2 : j1, mousePortSel != 0, msx2_key_matrix);
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,17 +1259,17 @@ void setup() {
   uint32_t n;
   bool cbios = false;
   bool msx2Bios = false;                           // MSX2(+ でない)の BIOS
-  uint8_t *bios = loadFile("/MSX2P.ROM", &n, true);
+  uint8_t *bios = loadFile(SD_ROOT "/MSX2P.ROM", &n, true);
   if (!bios) {
-    bios = loadFile("/MSX2.ROM", &n, true);
+    bios = loadFile(SD_ROOT "/MSX2.ROM", &n, true);
     msx2Bios = (bios != nullptr);
   }
   if (!bios) {
     // 実機のROMが無ければ C-BIOS (カートリッジだけ起動できるフリーのBIOS)
-    bios = loadFile("/cbios_main_msx2+_jp.rom", &n, true);
+    bios = loadFile(SD_ROOT "/cbios_main_msx2+_jp.rom", &n, true);
     cbios = (bios != nullptr);
   }
-  if (!bios) haltWithMessage("/MSX2P.ROM NOT FOUND");
+  if (!bios) haltWithMessage(SD_ROOT "/MSX2P.ROM NOT FOUND");
   msx2SetBios(bios);
   // VDP: BIOS の機種番号(002Dh: 1=MSX2, 2=MSX2+)に合わせる。MSX2 の BIOS なら V9938 として動かす
 #if MSX2_VDP == 1
@@ -1277,21 +1285,21 @@ void setup() {
     // C-BIOS はスロット0が拡張なし・F4hが反転型の前提
     msx2SetSlotExpanded(0, false);
     msx2SetF4Inverted(true);
-    if (uint8_t *p = loadFile("/cbios_logo_msx2+.rom", &n, false)) msx2SetRom(0, 0, 0x8000, p, n);
-    if (uint8_t *p = loadFile("/cbios_sub.rom", &n, false)) msx2SetSubRom(p);
+    if (uint8_t *p = loadFile(SD_ROOT "/cbios_logo_msx2+.rom", &n, false)) msx2SetRom(0, 0, 0x8000, p, n);
+    if (uint8_t *p = loadFile(SD_ROOT "/cbios_sub.rom", &n, false)) msx2SetSubRom(p);
   } else {
-    if (uint8_t *p = loadFile(msx2Bios ? "/MSX2EXT.ROM" : "/MSX2PEXT.ROM", &n, false)) msx2SetSubRom(p);
+    if (uint8_t *p = loadFile(msx2Bios ? SD_ROOT "/MSX2EXT.ROM" : SD_ROOT "/MSX2PEXT.ROM", &n, false)) msx2SetSubRom(p);
     else Serial.println(msx2Bios ? "Warning: /MSX2EXT.ROM (sub ROM) not found" : "Warning: /MSX2PEXT.ROM (sub ROM) not found");
     // 漢字BASIC は MSX2+ の機能なので、MSX2 の BIOS のときは載せない
     if (!msx2Bios)
-      if (uint8_t *p = loadFile("/KNJBASIC.ROM", &n, false)) msx2SetKanjiBasic(p, n);
+      if (uint8_t *p = loadFile(SD_ROOT "/KNJBASIC.ROM", &n, false)) msx2SetKanjiBasic(p, n);
   }
-  if (uint8_t *p = loadFile("/KANJI.ROM", &n, false)) msx2SetKanjiFont(p, n);
+  if (uint8_t *p = loadFile(SD_ROOT "/KANJI.ROM", &n, false)) msx2SetKanjiFont(p, n);
 
   // ---- 起動メニュー (スロット1/2・Disk BIOS・ドライブ1/2) ----
   uint32_t fmpacSize = 0;
-  uint8_t *fmpacRom = loadFile("/FMPAC.ROM", &fmpacSize, false);
-  uint8_t *diskRom = cbios ? nullptr : loadFile("/DISK.ROM", &n, false);
+  uint8_t *fmpacRom = loadFile(SD_ROOT "/FMPAC.ROM", &fmpacSize, false);
+  uint8_t *diskRom = cbios ? nullptr : loadFile(SD_ROOT "/DISK.ROM", &n, false);
   if (diskRom) {
     diskBuf[0] = (uint8_t *)ps_malloc(DISK_MAX);
     diskBuf[1] = (uint8_t *)ps_malloc(DISK_MAX);
@@ -1318,9 +1326,9 @@ void setup() {
   } else {
     if (fmpacRom) free(fmpacRom);
     if (cbios) {
-      if (uint8_t *p = loadFile("/cbios_music.rom", &n, false)) msx2SetMusicRom(p, 3, 3);
+      if (uint8_t *p = loadFile(SD_ROOT "/cbios_music.rom", &n, false)) msx2SetMusicRom(p, 3, 3);
     } else {
-      if (uint8_t *p = loadFile("/MSX2PMUS.ROM", &n, false)) msx2SetMusicRom(p);
+      if (uint8_t *p = loadFile(SD_ROOT "/MSX2PMUS.ROM", &n, false)) msx2SetMusicRom(p);
     }
   }
   if (diskRom && boot.diskBios) msx2SetDiskRom(diskRom);
@@ -1340,10 +1348,10 @@ void setup() {
 }
 
 // ---------------------------------------------------------------------------
-//  FM-PAC の SRAM(8KB)を SD の /FMPAC.PAC に保存する(openMSX などと同じ形:
+//  FM-PAC の SRAM(8KB)を SD の /MSX2/FMPAC.PAC に保存する(openMSX などと同じ形:
 //  "PAC2 BACKUP DATA" の 16 バイトのあとに 1FFEh バイト)。書き込みが止まって 2 秒たったら保存。
 // ---------------------------------------------------------------------------
-static const char *FMPAC_SRAM_FILE = "/FMPAC.PAC";
+static const char *FMPAC_SRAM_FILE = SD_ROOT "/FMPAC.PAC";
 static const char FMPAC_SRAM_HEADER[17] = "PAC2 BACKUP DATA";
 
 static void loadFmPacSram(uint8_t *sram) {

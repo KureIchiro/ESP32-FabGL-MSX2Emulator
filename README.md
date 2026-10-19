@@ -32,8 +32,6 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
    - FabGLベースのMSX本体エミュレータ（MSX1 / MSX2+）。
 2. **Joystick Converter (STM32)**
    - アタリ仕様のジョイスティックをESP32-MSXEmulator仕様に変換するためのユニット。
-3. **Joystick Converter (Arduino / other MCUs)**
-   - `Joystick_Converter_arduino` にArduino Mega 2560向け、`Joystick_Converter_arduino_nano` にATmega328P搭載Arduino Nano向けの変換スケッチがあります。他のマイコンへ移植する場合のベースとしても利用できます。
 
 ### クレジットと謝辞
 
@@ -102,34 +100,38 @@ ESP32の実行リソースが限られているため、実機の完全な再現
 
 ## 3. SDカードの構成とセットアップ
 
-動作には、SDカードのルートディレクトリに以下の配置が必要です。
+SDカードのルートに、MSX1 は `/MSX1`、MSX2+ は `/MSX2` のフォルダを作り、それぞれの中に以下を置きます（マーク3 は `/SMS`、PC-8801 は `/PC88`、X1 は `/X1` なので、1枚のSDカードに全機種のファイルを入れられます）。
 
 ### MSX1
 
 ```
 / (SD Root)
-├── MSX.ROM         : MSX1本体の純正BIOS (32KB / 必須)
-├── DISK.ROM        : ディスクインターフェースROM (16KB / FDD使用時に必須)
-├── FMPAC.ROM       : FM-PAC のROM (16KB または 64KB / FM-PAC を使うとき)
-├── FMPAC.PAC       : FM-PAC の SRAM の保存ファイル (自動で作られます)
-├── /ROM            : ゲームROMファイル (.rom) を格納（中にフォルダを作ってもよい）
-│   └── /SAVE       : ステートセーブデータ保存用フォルダ
-└── /DISK           : ディスクイメージファイル (.dsk) を格納（中にフォルダを作ってもよい）
+└── /MSX1
+    ├── MSX.ROM         : MSX1本体の純正BIOS (32KB / 必須)
+    ├── DISK.ROM        : ディスクインターフェースROM (16KB / FDD使用時に必須)
+    ├── FMPAC.ROM       : FM-PAC のROM (16KB または 64KB / FM-PAC を使うとき)
+    ├── FMPAC.PAC       : FM-PAC の SRAM の保存ファイル (自動で作られます)
+    ├── JOYKEY.CFG      : Joy B1〜B3 の設定 (自動で作られます)
+    ├── /ROM            : ゲームROMファイル (.rom) を格納（中にフォルダを作ってもよい）
+    │   └── /SAVE       : ステートセーブデータ保存用フォルダ
+    └── /DISK           : ディスクイメージファイル (.dsk) を格納（中にフォルダを作ってもよい）
 ```
 
 ### MSX2+
 
 ```
 / (SD Root)
-├── MSX2P.ROM / MSX2PEXT.ROM : MSX2+ の BIOS とサブROM（無ければ MSX2.ROM / MSX2EXT.ROM、それも無ければ C-BIOS）
-├── MSX2PMUS.ROM    : 内蔵 MSX-MUSIC の ROM
-├── KNJBASIC.ROM    : 漢字BASIC（MSX2+ のみ）
-├── KANJI.ROM       : 漢字ROM
-├── DISK.ROM        : ディスクROM（ソニー型 7FF8h〜7FFFh）
-├── FMPAC.ROM       : FM-PAC の ROM（あればスロット2の既定が FM-PAC）
-├── FMPAC.PAC       : FM-PAC の SRAM の保存ファイル (自動で作られます)
-├── /ROM            : ゲームROMファイル (.rom)
-└── /DISK           : ディスクイメージファイル (.dsk)
+└── /MSX2
+    ├── MSX2P.ROM / MSX2PEXT.ROM : MSX2+ の BIOS とサブROM（無ければ MSX2.ROM / MSX2EXT.ROM、それも無ければ C-BIOS）
+    ├── MSX2PMUS.ROM    : 内蔵 MSX-MUSIC の ROM
+    ├── KNJBASIC.ROM    : 漢字BASIC（MSX2+ のみ）
+    ├── KANJI.ROM       : 漢字ROM
+    ├── DISK.ROM        : ディスクROM（ソニー型 7FF8h〜7FFFh）
+    ├── FMPAC.ROM       : FM-PAC の ROM（あればスロット2の既定が FM-PAC）
+    ├── FMPAC.PAC       : FM-PAC の SRAM の保存ファイル (自動で作られます)
+    ├── JOYKEY.CFG      : Joy B1〜B3 の設定 (自動で作られます)
+    ├── /ROM            : ゲームROMファイル (.rom)
+    └── /DISK           : ディスクイメージファイル (.dsk)
 ```
 
 ROMマッパーは自動判別しません。以下の識別子（半角）をファイル名に加えてください。
@@ -166,18 +168,21 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 
 | 項目 | 内容 |
 |---|---|
-| Slot1 / Slot2 | カートリッジ。/ROM の .rom ファイル、または `<NONE>`（なし）・`<SCC>`（ROMの無いSCCカートリッジ）・`<FM-PAC>`（Slot2のみ。FMPAC.ROM があるとき既定） |
+| Slot1 / Slot2 | カートリッジ。/MSX1/ROM・/MSX2/ROM の .rom ファイル、または `<NONE>`（なし）・`<SCC>`（ROMの無いSCCカートリッジ）・`<FM-PAC>`（Slot2のみ。FMPAC.ROM があるとき既定） |
 | Disk BIOS | ディスクBIOSの ON / OFF（DISK.ROM があるとき） |
 | Disk1 / Disk2 | ドライブ1 / 2 に入れるディスクイメージ（.dsk） |
 | Mouse | `NONE` / `PORT 1` / `PORT 2`（PS/2マウスをそのジョイスティックポートにつなぐ） |
-| Joy B3 | ジョイスティックのボタン3で押すキー（既定は `NONE`） |
+| Joy B1〜B3 | マウスをつないだポートのコントローラのボタン1〜3で押すキー（既定は SPACE / RETURN / ESC） |
 | Run | 起動 |
+
+起動メニューとファイル選択は、ポート1のコントローラ（アタリ仕様 → シリアル変換器の1P）でも操作できます：↑↓ = 選択（押し続けると連続）、←→ = 1画面送り、ボタン1 = 決定（Enter）、ボタン2 = 取り消し（ESC）。
 
 - **Disk BIOS の既定**: ゲームROMだけで起動するときは自動で OFF になります（ワークエリアを取られて動かないゲームがあるため）。ディスクを入れたとき、ROMを挿さないとき（BASIC）は ON です。Enter で切り替えると以後は自動で変わりません。
 - **`<SCC>`**: ROMの無いSCCカートリッジです。『SDスナッチャー』などサウンドカートリッジを使うソフト向けです（SCCのみ。RAMはありません）。
-- **FM-PAC の SRAM**: 書き込みが止まって2秒たつと SD の `/FMPAC.PAC` に自動で保存し、次の起動で読み込みます（openMSX などと同じ形式）。
+- **FM-PAC の SRAM**: 書き込みが止まって2秒たつと SD の `/MSX1/FMPAC.PAC`・`/MSX2/FMPAC.PAC` に自動で保存し、次の起動で読み込みます（openMSX などと同じ形式）。
 - **マウス**: TTGO VGA32 の2つめの PS/2 端子につないだマウスを、選んだジョイスティックポートのMSXマウスとして使います（左ボタン = トリガA、右ボタン = トリガB）。
-- **Joy B3**: Enter を押すと行が黄色になり、次に押したキーがボタン3に割り当たります（PC-88 版の Joy B1〜B3 と同じ操作）。F6〜F12 など MSX に無いキーを押すと取り消し、この行で BackSpace を押すと `NONE`（何も押さない）に戻します。設定は SD の `/JOYKEY.CFG` に保存し、次の起動でも使います。ボタン3を押している間そのキーが押され、1P・2P どちらのボタン3でも働きます。ボタン1・2 はこれまでどおりトリガA・B です。
+- **マウスのポートのコントローラ（JoyToKey）**: Mouse で `PORT 1` / `PORT 2` を選ぶと、そのポートはマウスが使うので、同じポート番号のコントローラ（PORT 1 なら 1P、PORT 2 なら 2P）はキーボードとして働きます。方向 = カーソルキー、ボタン1〜3 = Joy B1〜B3 のキーです（PC-88 版と同じ考え方）。Mouse が `NONE` のときは働かず、コントローラは普通のジョイスティックです。もう一方のポートのコントローラも普通のジョイスティックのままです。
+- **Joy B1〜B3**: Enter を押すと行が黄色になり、次に押したキーがそのボタンに割り当たります（PC-88 版と同じ操作）。F6〜F12 など MSX に無いキーを押すと取り消し、その行で BackSpace を押すと `NONE`（何も押さない）に戻します。設定は SD の `/MSX1/JOYKEY.CFG`・`/MSX2/JOYKEY.CFG` に保存し、次の起動でも使います（前の版の1バイトのファイルはボタン3の設定として読みます）。
 
 ### ファイル選択画面
 
@@ -241,7 +246,7 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 | Bit | 機能     | 内容                                 |
 |-----|----------|--------------------------------------|
 | b7  | ID       | 0 = Port A (1P) / 1 = Port B (2P)    |
-| b6  | ボタン3  | 0:ON / 1:OFF (Active Low)。起動メニューの Joy B3 で決めたキー |
+| b6  | ボタン3  | 0:ON / 1:OFF (Active Low)。マウスのポートのコントローラのとき、起動メニューの Joy B3 で決めたキー |
 | b5  | ボタン2  | 0:ON / 1:OFF                         |
 | b4  | ボタン1  | 0:ON / 1:OFF                         |
 | b3  | 右       | 0:ON / 1:OFF                         |
@@ -252,21 +257,6 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 <img src="JoyStickConnection.JPG" width="300">
 
 基板にヘッダを半田付けし、端側のピン（白:3.3V、黒:GND、グレー:RX）に接続します。
-
-### 6-3. Arduino・他のマイコンを使う場合
-
-`Joystick_Converter_arduino` フォルダにArduino Mega 2560向け、`Joystick_Converter_arduino_nano` フォルダにATmega328P搭載Arduino Nano向けのスケッチがあります。他のマイコンへ移植する場合も、スケッチと上記のUART通信仕様をベースとして利用できます。
-
-5V動作のArduino Mega 2560のTX1 (D18)、またはArduino NanoのTX (D1) をESP32のIO39 (RX) に接続する場合は、抵抗分圧またはレベル変換器を使って3.3Vにしてください。ESP32の入力端子に5Vを直接入力しないでください。3.3Vロジックで動作する他のマイコンへ移植する方法もあります。ピン配置などの詳細は各Arduinoフォルダの `ReadMe.txt` を参照してください。Nano版はA6用の外付けプルアップ抵抗が必要です。
-
-**回路上の注意**
-
-- ArduinoとESP32のGNDを必ず共通にしてください。UARTはArduinoのTXからESP32のIO39 (RX) への一方向接続です。
-- 5V ArduinoのTXをESP32へ直結しないでください。抵抗分圧またはロジックレベル変換器で、ESP32側の信号を3.3Vにしてください。Arduinoの5V電源をESP32の3.3V端子へ接続しないでください。
-- コントローラーの方向・ボタン・連射スイッチは、各入力ピンとGNDの間に接続します。異なるArduinoピン同士や電源同士をスイッチで短絡しないでください。
-- Nano版のA6はアナログ入力専用で内部プルアップがありません。指定の外付け10kΩプルアップを接続してください。またD0はコントローラー入力とUSBシリアル書き込みで共用するため、書き込み時はD0に接続した連射SW2をOFFにしてください。
-
-Arduino版には、STM32版にあるUSB HIDジョイスティック機能はありません。
 
 ## 7. キーボード操作マニュアル
 
@@ -370,8 +360,6 @@ The boot menu and the file selector are shared by both. F12 and F8 are common; d
    - MSX main unit emulators based on FabGL (MSX1 / MSX2+).
 2. **Joystick Converter (STM32)**
    - A unit for converting Atari-style joysticks for use with the ESP32 MSX Emulator.
-3. **Joystick Converter (Arduino / other MCUs)**
-   - `Joystick_Converter_arduino` contains a converter sketch for Arduino Mega 2560, and `Joystick_Converter_arduino_nano` contains one for ATmega328P-based Arduino Nano. They can also serve as a basis for porting to other microcontrollers.
 
 ### Credits & Acknowledgments
 
@@ -439,34 +427,38 @@ This project aims to run MSX emulators at 60 FPS using an ESP32 and the FabGL li
 
 ## 3. SD Card Configuration and Setup
 
-The following files and folders must be placed in the root directory of the SD card.
+Create a `/MSX1` folder (MSX1) and a `/MSX2` folder (MSX2+) in the root of the SD card and put the files below inside them (Mark III uses `/SMS`, PC-8801 `/PC88` and X1 `/X1`, so one SD card can hold the files of every machine).
 
 ### MSX1
 
 ```
 / (SD Root)
-├── MSX.ROM         : MSX1 Original BIOS (32KB / Required)
-├── DISK.ROM        : Disk Interface ROM (16KB / Required for FDD)
-├── FMPAC.ROM       : FM-PAC ROM (16KB or 64KB / for FM-PAC)
-├── FMPAC.PAC       : FM-PAC SRAM save file (created automatically)
-├── /ROM            : Game ROM files (.rom) (sub-folders allowed)
-│   └── /SAVE       : Folder for State Save data
-└── /DISK           : Disk Image files (.dsk) (sub-folders allowed)
+└── /MSX1
+    ├── MSX.ROM         : MSX1 Original BIOS (32KB / Required)
+    ├── DISK.ROM        : Disk Interface ROM (16KB / Required for FDD)
+    ├── FMPAC.ROM       : FM-PAC ROM (16KB or 64KB / for FM-PAC)
+    ├── FMPAC.PAC       : FM-PAC SRAM save file (created automatically)
+    ├── JOYKEY.CFG      : Joy B1-B3 settings (created automatically)
+    ├── /ROM            : Game ROM files (.rom) (sub-folders allowed)
+    │   └── /SAVE       : Folder for State Save data
+    └── /DISK           : Disk Image files (.dsk) (sub-folders allowed)
 ```
 
 ### MSX2+
 
 ```
 / (SD Root)
-├── MSX2P.ROM / MSX2PEXT.ROM : MSX2+ BIOS and sub ROM (falls back to MSX2.ROM / MSX2EXT.ROM, then C-BIOS)
-├── MSX2PMUS.ROM    : Internal MSX-MUSIC ROM
-├── KNJBASIC.ROM    : Kanji BASIC (MSX2+ only)
-├── KANJI.ROM       : Kanji ROM
-├── DISK.ROM        : Disk ROM (Sony type, 7FF8h-7FFFh)
-├── FMPAC.ROM       : FM-PAC ROM (if present, Slot 2 defaults to FM-PAC)
-├── FMPAC.PAC       : FM-PAC SRAM save file (created automatically)
-├── /ROM            : Game ROM files (.rom)
-└── /DISK           : Disk Image files (.dsk)
+└── /MSX2
+    ├── MSX2P.ROM / MSX2PEXT.ROM : MSX2+ BIOS and sub ROM (falls back to MSX2.ROM / MSX2EXT.ROM, then C-BIOS)
+    ├── MSX2PMUS.ROM    : Internal MSX-MUSIC ROM
+    ├── KNJBASIC.ROM    : Kanji BASIC (MSX2+ only)
+    ├── KANJI.ROM       : Kanji ROM
+    ├── DISK.ROM        : Disk ROM (Sony type, 7FF8h-7FFFh)
+    ├── FMPAC.ROM       : FM-PAC ROM (if present, Slot 2 defaults to FM-PAC)
+    ├── FMPAC.PAC       : FM-PAC SRAM save file (created automatically)
+    ├── JOYKEY.CFG      : Joy B1-B3 settings (created automatically)
+    ├── /ROM            : Game ROM files (.rom)
+    └── /DISK           : Disk Image files (.dsk)
 ```
 
 ROM mappers are not detected automatically. Please add one of the following identifiers (half‑width) to the file name:
@@ -503,18 +495,21 @@ A boot menu appears at power-on (MSX1 and MSX2+). Select an item with Up/Down an
 
 | Item | Meaning |
 |---|---|
-| Slot1 / Slot2 | Cartridge: a .rom file in /ROM, or `<NONE>`, `<SCC>` (ROM-less SCC cartridge), `<FM-PAC>` (Slot 2 only; default when FMPAC.ROM exists) |
+| Slot1 / Slot2 | Cartridge: a .rom file in /MSX1/ROM or /MSX2/ROM, or `<NONE>`, `<SCC>` (ROM-less SCC cartridge), `<FM-PAC>` (Slot 2 only; default when FMPAC.ROM exists) |
 | Disk BIOS | Disk BIOS ON / OFF (when DISK.ROM exists) |
 | Disk1 / Disk2 | Disk images (.dsk) for drive 1 / 2 |
 | Mouse | `NONE` / `PORT 1` / `PORT 2` (connects a PS/2 mouse to that joystick port) |
-| Joy B3 | Key pressed by joystick button 3 (default `NONE`) |
+| Joy B1-B3 | Keys pressed by buttons 1-3 of the controller on the mouse port (default SPACE / RETURN / ESC) |
 | Run | Start |
+
+The boot menu and the file selector can also be operated with the port 1 controller (1P of the Atari-to-serial converter): Up/Down = select (repeats while held), Left/Right = page up/down, button 1 = Enter, button 2 = cancel (ESC).
 
 - **Disk BIOS default**: turned OFF automatically when booting a game ROM only (some games fail when the disk BIOS takes work area). It is ON when a disk is selected or when no ROM is inserted (BASIC). Once you toggle it with Enter it is no longer changed automatically.
 - **`<SCC>`**: a ROM-less SCC cartridge for software that uses a sound cartridge, such as SD Snatcher (SCC only; no RAM).
-- **FM-PAC SRAM**: saved automatically to `/FMPAC.PAC` on the SD card 2 seconds after the last write, and loaded at the next boot (same format as openMSX).
+- **FM-PAC SRAM**: saved automatically to `/MSX1/FMPAC.PAC` / `/MSX2/FMPAC.PAC` on the SD card 2 seconds after the last write, and loaded at the next boot (same format as openMSX).
 - **Mouse**: a mouse on the second PS/2 connector of the TTGO VGA32 works as an MSX mouse on the selected joystick port (left button = trigger A, right button = trigger B).
-- **Joy B3**: press Enter and the row turns yellow; the next key you press is assigned to button 3 (same operation as Joy B1-B3 on the PC-88 version). A key the MSX does not have (F6-F12, etc.) cancels; BackSpace on this row sets it back to `NONE`. The setting is saved to `/JOYKEY.CFG` on the SD card and used at the next boot. The key is held while button 3 is held, on either the 1P or 2P controller. Buttons 1 and 2 remain triggers A and B.
+- **Controller on the mouse port (JoyToKey)**: when Mouse is `PORT 1` / `PORT 2`, that port is used by the mouse, so the controller with the same number (1P for PORT 1, 2P for PORT 2) works as a keyboard: directions = cursor keys, buttons 1-3 = the Joy B1-B3 keys (same idea as the PC-88 version). With Mouse = `NONE` it is off and the controller is a normal joystick. The controller of the other port always stays a normal joystick.
+- **Joy B1-B3**: press Enter and the row turns yellow; the next key you press is assigned to that button (same operation as the PC-88 version). A key the MSX does not have (F6-F12, etc.) cancels; BackSpace on the row sets it back to `NONE`. The setting is saved to `/MSX1/JOYKEY.CFG` / `/MSX2/JOYKEY.CFG` on the SD card and used at the next boot (an old 1-byte file is read as the button 3 setting).
 
 ### File Selector
 
@@ -577,7 +572,7 @@ The emulator receives the following 2-byte binary data via serial and maps it to
 | Bit | Function   | Content                                 |
 |-----|------------|-----------------------------------------|
 | b7  | ID         | 0 = Port A (1P) / 1 = Port B (2P)       |
-| b6  | Button 3   | 0:ON / 1:OFF (Active Low); the key set by Joy B3 in the boot menu |
+| b6  | Button 3   | 0:ON / 1:OFF (Active Low); on the mouse-port controller, the key set by Joy B3 in the boot menu |
 | b5  | Button 2   | 0:ON / 1:OFF                            |
 | b4  | Button 1   | 0:ON / 1:OFF                            |
 | b3  | Right      | 0:ON / 1:OFF                            |
@@ -588,21 +583,6 @@ The emulator receives the following 2-byte binary data via serial and maps it to
 <img src="JoyStickConnection.JPG" width="300">
 
 Solder the headers to the board. Connect to the pins on the edge of the board (White: 3.3V, Black: GND, Grey: RX).
-
-### 6-3. Using Arduino or Other Microcontrollers
-
-The `Joystick_Converter_arduino` folder contains a sketch for Arduino Mega 2560, and `Joystick_Converter_arduino_nano` contains one for ATmega328P-based Arduino Nano. The sketches and UART protocol above can also be used as a basis for porting to other microcontrollers.
-
-When connecting the 5V TX1 (D18) output of an Arduino Mega 2560 or TX (D1) output of an Arduino Nano to ESP32 IO39 (RX), use a resistor voltage divider or a logic-level shifter to reduce the signal to 3.3V. Do not connect 5V directly to an ESP32 input. Alternatively, port the sketch to another microcontroller with 3.3V logic. See each Arduino folder's `ReadMe.txt` for pin assignments and details. The Nano version requires an external pull-up resistor for A6.
-
-**Circuit cautions**
-
-- Connect Arduino GND and ESP32 GND together. UART is a one-way connection from Arduino TX to ESP32 IO39 (RX).
-- Never connect a 5V Arduino TX directly to the ESP32. Use a resistor voltage divider or logic-level shifter so the signal at the ESP32 is 3.3V. Do not connect the Arduino 5V supply to the ESP32 3.3V pin.
-- Connect each controller direction, button, and turbo switch between its assigned input pin and GND. Do not use a switch to short two Arduino pins or power rails together.
-- Nano A6 is analog-input-only and has no internal pull-up; install the specified external 10kΩ pull-up. Nano D0 is shared by a controller turbo switch and USB-serial programming, so turn off the turbo switch connected to D0 while uploading.
-
-The Arduino version does not include the USB HID joystick functionality available in the STM32 version.
 
 ## 7. Keyboard Manual
 

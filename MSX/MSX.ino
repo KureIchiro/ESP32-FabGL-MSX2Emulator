@@ -84,6 +84,9 @@
 #include "Z80.h"
 #include "KeyboardSystem.hpp"
 #include "JoyKeys.hpp"
+
+// SD カードの中の MSX1 のフォルダ(BIOS・/ROM・/DISK・設定ファイルはすべてこの下。MSX2 は /MSX2、マーク3 は /SMS)
+#define SD_ROOT "/MSX1"
 #include "wd2793.h"
 #include "emu2413.h"
 
@@ -879,7 +882,7 @@ bool savePsramToSd(int drive) {
 }
 
 void loadDiskROM() {
-  File file = SD.open("/disk.rom");
+  File file = SD.open(SD_ROOT "/disk.rom");
   if (file) {
     file.read(&slot_mem[2][0x4000], 16384);
     file.close();
@@ -1021,7 +1024,15 @@ static int mousePhase = 3;
 static int8_t mouseRelX, mouseRelY;
 static int32_t mouseLastX, mouseLastY;
 
+// 最後に 8 番ピンを切り替えた時刻。しばらく切り替えが無い(マウスとして読んでいない)ときは、方向のビットを
+// 「押していない」にする(MSX2 版と同じ。止まっているマウスの移動量 0 はジョイスティックとして読むと
+// 全方向が押された形になり、ポート1も読むゲームでカーソルキーが効かなくなっていた)
+static uint32_t mouseStrobeMs;
+static bool mouseStrobed = false;
+
 static void mouseStrobe() {
+  mouseStrobeMs = millis();
+  mouseStrobed = true;
   if (mousePhase == 3) {
     int32_t x = mouse_x, y = mouse_y;
     int dx = -(x - mouseLastX), dy = y - mouseLastY;
@@ -1042,6 +1053,7 @@ static uint8_t mouseRead(uint8_t joy) {
     case 2:  n = (uint8_t)(mouseRelY >> 4); break;
     default: n = (uint8_t)mouseRelY; break;
   }
+  if (!mouseStrobed || millis() - mouseStrobeMs > 70) n = 0x0F;   // 約 4 フレーム読まれていない
   uint8_t b = mouse_buttons;
   return (uint8_t)((joy & 0xC0) | ((b & 1) ? 0 : 0x10) | ((b & 2) ? 0 : 0x20) | (n & 0x0F));
 }
@@ -1202,7 +1214,7 @@ String getSavePath(int slotIdx) {
   int dotIndex = path.lastIndexOf('.');
   String base = (dotIndex != -1) ? path.substring(0, dotIndex) : path;
 
-  return "/ROM/SAVE/" + base + String(slotIdx + 1) + ".sav";
+  return SD_ROOT "/ROM/SAVE/" + base + String(slotIdx + 1) + ".sav";
 }
 
 void syncGametoPSRAM(int idx) {
@@ -1371,8 +1383,9 @@ void syncPSRAMtoGame(int idx) {
 
 void stateSavePSRAMtoSD(int idx) {
   String path = getSavePath(idx);
-  if (!SD.exists("/ROM")) SD.mkdir("/ROM");
-  if (!SD.exists("/ROM/SAVE")) SD.mkdir("/ROM/SAVE");
+  if (!SD.exists(SD_ROOT)) SD.mkdir(SD_ROOT);
+  if (!SD.exists(SD_ROOT "/ROM")) SD.mkdir(SD_ROOT "/ROM");
+  if (!SD.exists(SD_ROOT "/ROM/SAVE")) SD.mkdir(SD_ROOT "/ROM/SAVE");
 
   File file = SD.open(path.c_str(), FILE_WRITE);
   if (file) {
@@ -1433,6 +1446,7 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext,
     File dir = SD.open(path.c_str());
     if (!dir && sub != "") { sub = ""; want = ""; continue; }   // 前に選んだフォルダが無くなっていた
     if (!dir) {
+      SD.mkdir(SD_ROOT);
       SD.mkdir(dirPath);
       dir = SD.open(dirPath);
     }
@@ -1445,7 +1459,7 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext,
       if (s >= 0) name = name.substring(s + 1);
       if (name.length() && name[0] != '.' && name != "System Volume Information") {
         if (file.isDirectory()) {
-          if (!(sub == "" && name == "SAVE" && strcmp(dirPath, "/ROM") == 0))   // ステートセーブ置き場は出さない
+          if (!(sub == "" && name == "SAVE" && strcmp(dirPath, SD_ROOT "/ROM") == 0))   // ステートセーブ置き場は出さない
             dirs.push_back({ name, K_DIR });
         } else {
           String lowerName = name;
@@ -1570,10 +1584,10 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext,
 void handleDiskSelect(int drive) {
   char title[32];
   sprintf(title, "--- SELECT %c (ESC TO EXIT) ---", (drive == 0) ? 'A' : 'B');
-  String cur = strncmp(drive_filepath[drive], "/DISK/", 6) == 0 ? String(drive_filepath[drive] + 6) : String("");
-  String selected = showFileSelector(title, "/DISK", ".DSK", {}, cur);
+  String cur = strncmp(drive_filepath[drive], SD_ROOT "/DISK/", sizeof(SD_ROOT "/DISK/") - 1) == 0 ? String(drive_filepath[drive] + sizeof(SD_ROOT "/DISK/") - 1) : String("");
+  String selected = showFileSelector(title, SD_ROOT "/DISK", ".DSK", {}, cur);
   if (selected != "") {
-    if (loadSdToPsram(drive, "/DISK/" + selected)) {
+    if (loadSdToPsram(drive, SD_ROOT "/DISK/" + selected)) {
       flashStatus("LOAD SUCCESS", 1000);
     } else {
       flashStatus("LOAD ERROR!", 2000);
@@ -1588,7 +1602,7 @@ void handleDiskSelect(int drive) {
 //    マウスをつないだポートのコントローラはキーボードとして働く: 方向 = カーソルキー、
 //    ボタン1〜3 = Joy B1〜B3 で決めたキー(Mouse = NONE のときは働かない。JoyKeys.hpp)。
 //    Joy B1〜B3: Enter で黄色になり、次に押したキーを割り当てる。F6〜F12 で取り消し、BackSpace で NONE。
-//     SD の /JOYKEY.CFG に保存(PC-88 版と同じ操作)。
+//     SD の /MSX1/JOYKEY.CFG に保存(PC-88 版と同じ操作)。
 //    選んでいる項目は反転表示。
 //    (Arduino が関数の宣言を先頭に自動で入れるので、構造体は使わずに変数で持つ)
 // ---------------------------------------------------------------------------
@@ -1600,9 +1614,9 @@ static String bootDisk[2] = { "", "" };       // /DISK からの相対パス
 static bool bootDiskBios = true, bootDiskBiosManual = false;
 static int bootMouse = 0;                     // 0 = なし、1 / 2 = ジョイスティックポート
 
-// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /JOYKEY.CFG に3バイト。
+// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /MSX1/JOYKEY.CFG に3バイト。
 // 前の版の1バイトのファイルはボタン3のキーとして読む)
-static const char* JOYKEY_FILE = "/JOYKEY.CFG";
+static const char* JOYKEY_FILE = SD_ROOT "/JOYKEY.CFG";
 static void loadJoyKey() {
   File f = SD.open(JOYKEY_FILE, FILE_READ);
   if (!f) return;
@@ -1738,7 +1752,7 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
           std::vector<String> extra = { ITEM_NONE, ITEM_SCC };
           if (it == 1 && hasFmPac) extra.push_back(ITEM_FMPAC);
           bootMenuInvalidate();                  // ファイル選択の画面で上書きされる
-          String sel = showFileSelector(it ? "-- SELECT ROM FOR SLOT 2 --" : "-- SELECT ROM FOR SLOT 1 --", "/ROM", ".ROM", extra,
+          String sel = showFileSelector(it ? "-- SELECT ROM FOR SLOT 2 --" : "-- SELECT ROM FOR SLOT 1 --", SD_ROOT "/ROM", ".ROM", extra,
                                         bootSlot[it] == "" ? String(ITEM_NONE) : bootSlot[it]);
           if (sel != "") bootSlot[it] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it == 2) {
@@ -1748,7 +1762,7 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
           int d = it - 3;
           bootMenuInvalidate();
           String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE 2 --" : "-- SELECT DISK FOR DRIVE 1 --",
-                                        "/DISK", ".DSK", { ITEM_NONE }, bootDisk[d] == "" ? String(ITEM_NONE) : bootDisk[d]);
+                                        SD_ROOT "/DISK", ".DSK", { ITEM_NONE }, bootDisk[d] == "" ? String(ITEM_NONE) : bootDisk[d]);
           if (sel != "") bootDisk[d] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it == 5) {
           bootMouse = (bootMouse + 1) % 3;
@@ -1761,12 +1775,12 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
 #ifdef USE_FDC
           if (hasDiskRom && bootDiskBios) {
             for (int d = 0; d < 2 && !msg; d++)
-              if (bootDisk[d] != "" && !loadSdToPsram(d, "/DISK/" + bootDisk[d])) msg = d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
+              if (bootDisk[d] != "" && !loadSdToPsram(d, SD_ROOT "/DISK/" + bootDisk[d])) msg = d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
           }
 #endif
           if (!msg) {
             // ステートセーブのファイル名に使う ROM(スロット1、無ければスロット2)
-            selectedRom = isRomItem(bootSlot[0]) ? "/ROM/" + bootSlot[0] : isRomItem(bootSlot[1]) ? "/ROM/" + bootSlot[1] : "";
+            selectedRom = isRomItem(bootSlot[0]) ? SD_ROOT "/ROM/" + bootSlot[0] : isRomItem(bootSlot[1]) ? SD_ROOT "/ROM/" + bootSlot[1] : "";
             return;
           }
         }
@@ -2099,14 +2113,14 @@ static bool loadCartridge(int s, const String& path) {
 }
 
 // ---------------------------------------------------------------------------
-//  FM-PAC: /FMPAC.ROM をスロット s に。SRAM(8KB)は SD の /FMPAC.PAC に保存する
+//  FM-PAC: /MSX1/FMPAC.ROM をスロット s に。SRAM(8KB)は SD の /MSX1/FMPAC.PAC に保存する
 //  (openMSX などと同じ形: "PAC2 BACKUP DATA" の 16 バイトのあとに 1FFEh バイト)。
 // ---------------------------------------------------------------------------
-static const char* FMPAC_SRAM_FILE = "/FMPAC.PAC";
+static const char* FMPAC_SRAM_FILE = SD_ROOT "/FMPAC.PAC";
 static const char FMPAC_SRAM_HEADER[17] = "PAC2 BACKUP DATA";
 
 static bool loadFmPac(int s) {
-  File f = SD.open("/FMPAC.ROM");
+  File f = SD.open(SD_ROOT "/FMPAC.ROM");
   if (!f) return false;
   uint32_t size = f.size();
   uint32_t rs = 0x4000;
@@ -2358,7 +2372,7 @@ void setup() {
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   if (SD.begin(SD_CS, SPI)) {
-    File biosFile = SD.open("/MSX.ROM");
+    File biosFile = SD.open(SD_ROOT "/MSX.ROM");
     if (biosFile) {
       size_t size = biosFile.size();
       if (size > 0x8000) size = 0x8000;
@@ -2371,11 +2385,11 @@ void setup() {
 
 #ifdef USE_FDC
     initDiskPSRAM();
-    bool hasDiskRom = SD.exists("/DISK.ROM");
+    bool hasDiskRom = SD.exists(SD_ROOT "/DISK.ROM");
 #else
     bool hasDiskRom = false;
 #endif
-    bool hasFmPac = SD.exists("/FMPAC.ROM");
+    bool hasFmPac = SD.exists(SD_ROOT "/FMPAC.ROM");
     bootSlot[1] = hasFmPac ? ITEM_FMPAC : "";  // スロット2の既定は FM-PAC(MSX2 版と同じ)
     loadJoyKey();
     Serial1.begin(115200, SERIAL_8N1, 39, -1);   // 起動メニューもポート1のコントローラで操作できる
@@ -2390,14 +2404,14 @@ void setup() {
       } else if (item == ITEM_FMPAC) {
         if (!loadFmPac(s)) Serial.println("FM-PAC load failed");
       } else if (item != "") {
-        loadCartridge(s, "/ROM/" + item);
+        loadCartridge(s, SD_ROOT "/ROM/" + item);
       }
     }
 
 #ifdef USE_FDC
     // ---- DISK.ROM: 空いているスロット(2 → 1)、どちらも使っていればスロット3-1(拡張スロット)----
     File diskRomFile;
-    if (hasDiskRom && bootDiskBios) diskRomFile = SD.open("/DISK.ROM");
+    if (hasDiskRom && bootDiskBios) diskRomFile = SD.open(SD_ROOT "/DISK.ROM");
     if (diskRomFile) {
       size_t size = diskRomFile.size();
       if (size > 0x4000) size = 0x4000;  // 通常16KB

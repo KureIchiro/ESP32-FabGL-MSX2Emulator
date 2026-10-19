@@ -1527,6 +1527,12 @@ static VDP_NOINLINE void bgBitmap(int m, u32a *d, int y) {
 }
 
 // ---- スプライト ----
+// 1ラインのスプライトの枚数の制限(モード1 = 4枚、モード2 = 8枚)をなくす(Shift+F8。MSX1 版と同じ)。
+// 5枚目・9枚目のステータス(S#0)は制限なしでも実機どおり立てる(それを見て表示を変えるソフト向け)
+#define SPR_MAX 32
+static bool sprNoLimit = false;
+void vdpSetSpriteNoLimit(bool on) { sprNoLimit = on; }
+bool vdpSpriteNoLimit() { return sprNoLimit; }
 // 結果は sprPix() に入れ、触った8ドットのブロックを used に返す(合成のあと sprFinish で0に戻す)。
 static inline uint32_t sprBits(uint32_t bits, bool mag) {   // 16bit(上位が左) → 32bit(bit31 が左端)
   if (!mag) return bits << 16;
@@ -1600,7 +1606,7 @@ static VDP_NOINLINE VDP_HOT bool spritesMode1(int y, uint32_t &used) {
     if (dy >= (uint32_t)h) continue;
     if (++count > 4) {
       if (!(S.status[0] & 0x40)) S.status[0] = (S.status[0] & 0xA0) | 0x40 | i;
-      break;
+      if (!sprNoLimit) break;                             // 制限なし(Shift+F8)なら5枚目以降も描く
     }
 #if MSX2_PROFILE
     P.sprVis++;
@@ -1624,19 +1630,22 @@ static VDP_NOINLINE VDP_HOT bool spritesMode1(int y, uint32_t &used) {
   return any;
 }
 
-// モード2: このラインに出るスプライトを探す(Y=216 で終わり、9枚目で打ち切り)。
-// vis[] = 番号 | (dy << 8)。戻り値 = 枚数 | 9枚目があればその番号 << 8 | 0x80
+// モード2: このラインに出るスプライトを探す(Y=216 で終わり、9枚目で打ち切り。制限なしなら32枚まで)。
+// vis[] = 番号 | (dy << 8)(SPR_MAX 個まで)。戻り値 = 枚数 | 9枚目があればその番号 << 8 | 0x80
 static VDP_NOINLINE VDP_HOT uint32_t sprScan2(const uint8_t *ys, int st, uint32_t y1, uint32_t h, uint32_t *vis) {
-  uint32_t n = 0;
+  uint32_t n = 0, ninth = 0;
   for (uint32_t i = 0; i < 32; i++, ys += st) {
     uint32_t sy = *ys;
     if (sy == 216) break;
     uint32_t dy = (y1 - sy) & 0xFF;
     if (dy >= h) continue;
-    if (n >= 8) return n | 0x80 | (i << 8);
+    if (n >= 8) {
+      if (!ninth) ninth = 0x80 | (i << 8);                // 9枚目のステータスは制限なしでも実機どおり
+      if (!sprNoLimit) return n | ninth;
+    }
     vis[n++] = i | (dy << 8);
   }
-  return n;
+  return n | ninth;
 }
 
 static VDP_NOINLINE VDP_HOT bool spritesMode2(int y, bool pl, uint32_t &used) {
@@ -1646,7 +1655,7 @@ static VDP_NOINLINE VDP_HOT bool spritesMode2(int y, bool pl, uint32_t &used) {
   bool big = (S.reg[1] & 2) != 0, mag = (S.reg[1] & 1) != 0;
   int h = (big ? 16 : 8) << (mag ? 1 : 0);
   bool tp = (S.reg[8] & 0x20) != 0;
-  uint32_t vis[8];                                        // 表示するスプライト: 番号 | (dy << 8)
+  uint32_t vis[SPR_MAX];                                  // 表示するスプライト: 番号 | (dy << 8)
   // G6/G7 以外は表を内部RAMの写しから読む(tabA = 色表+属性表、tabP = パターン)
   const uint8_t *tabA = nullptr, *tabP = nullptr;
   if (!pl) { shSetup(ctab, 0x280, pgen); tabA = shA; tabP = shP; }
@@ -1715,7 +1724,7 @@ struct SprE {
   uint32_t m;                                             // ドットのマスク(bit31 が x)
   uint8_t  x, col, draw, ic;                              // 描き始め / 色 / 描く(色≠0 か TP=1) / IC
 };
-static MSX2_DRAM SprE sprE[8];
+static MSX2_DRAM SprE sprE[SPR_MAX];
 
 #if defined(__GNUC__)
 static inline uint32_t sprClz(uint32_t v) { return (uint32_t)__builtin_clz(v); }   // ESP32 は NSAU 1命令
@@ -1731,7 +1740,7 @@ static VDP_NOINLINE VDP_HOT int sprPrep2(int y, bool pl) {
   bool big = (S.reg[1] & 2) != 0, mag = (S.reg[1] & 1) != 0;
   int h = (big ? 16 : 8) << (mag ? 1 : 0);
   bool tp = (S.reg[8] & 0x20) != 0;
-  uint32_t vis[8];
+  uint32_t vis[SPR_MAX];
   const uint8_t *tabA = nullptr, *tabP = nullptr;
   if (!pl) { shSetup(ctab, 0x280, pgen); tabA = shA; tabP = shP; }
   const uint8_t *ys = pl ? &vram[sat >> 1] : tabA + 0x200;

@@ -31,7 +31,7 @@ static void joyKeysApply(uint8_t state, bool enabled, volatile uint8_t *matrix) 
     if (rb == 0xFF) continue;
     uint8_t r = rb >> 4, m = (uint8_t)(1 << (rb & 7));
     if (now & (1 << i)) matrix[r] &= (uint8_t)~m;
-    //else if (was & (1 << i)) matrix[r] |= m;
+    else if (was & (1 << i)) matrix[r] |= m;
   }
   was = now;
 }

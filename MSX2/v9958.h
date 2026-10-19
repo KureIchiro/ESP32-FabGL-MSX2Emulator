@@ -37,6 +37,9 @@ void vdpReset();
 // (R#18 の画面位置調整はどちらでも効く)
 void vdpSetV9938(bool v9938);
 bool vdpIsV9938();
+// 1ラインのスプライトの枚数の制限をなくす(true)。Shift+F8 で切り替え(MSX1 版と同じ)
+void vdpSetSpriteNoLimit(bool on);
+bool vdpSpriteNoLimit();
 
 uint8_t vdpReadPort(int port);          // port = 0..3 (98h〜9Bh)
 void    vdpWritePort(int port, uint8_t v);

@@ -337,6 +337,7 @@ static void insertCartFromEnv() {
     printf("SCC cartridge in slot %d\n", atoi(ss));
   }
   if (const char *ms = getenv("MOUSE")) msx2SetMousePort(atoi(ms));   // MOUSE=1|2
+  if (getenv("SPRNOLIMIT")) vdpSetSpriteNoLimit(true);               // SPRNOLIMIT=1: スプライトの枚数制限なし(Shift+F8)
   const char *path = getenv("CART");
   if (!path || !*path) return;
   uint32_t size;
