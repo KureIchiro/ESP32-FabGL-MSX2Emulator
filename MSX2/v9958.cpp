@@ -1528,7 +1528,7 @@ static VDP_NOINLINE void bgBitmap(int m, u32a *d, int y) {
 
 // ---- スプライト ----
 // 1ラインのスプライトの枚数の制限(モード1 = 4枚、モード2 = 8枚)をなくす(Shift+F8。MSX1 版と同じ)。
-// 5枚目・9枚目のステータス(S#0)は制限なしでも実機どおり立てる(それを見て表示を変えるソフト向け)
+// モード1の5枚目のステータス(S#0)は制限なしでも立てる。モード2の9枚目の検出は制限なしなら行わない。
 #define SPR_MAX 32
 static bool sprNoLimit = false;
 void vdpSetSpriteNoLimit(bool on) { sprNoLimit = on; }
@@ -1630,8 +1630,8 @@ static VDP_NOINLINE VDP_HOT bool spritesMode1(int y, uint32_t &used) {
   return any;
 }
 
-// モード2: このラインに出るスプライトを探す(Y=216 で終わり、9枚目で打ち切り。制限なしなら32枚まで)。
-// vis[] = 番号 | (dy << 8)(SPR_MAX 個まで)。戻り値 = 枚数 | 9枚目があればその番号 << 8 | 0x80
+// モード2: このラインに出るスプライトを探す(Y=216 で終わり、制限ありなら9枚目で打ち切り)。
+// vis[] = 番号 | (dy << 8)(SPR_MAX 個まで)。戻り値 = 枚数 | (制限ありで9枚目があればその番号 << 8 | 0x80)
 static VDP_NOINLINE VDP_HOT uint32_t sprScan2(const uint8_t *ys, int st, uint32_t y1, uint32_t h, uint32_t *vis) {
   uint32_t n = 0, ninth = 0;
   for (uint32_t i = 0; i < 32; i++, ys += st) {
@@ -1640,8 +1640,10 @@ static VDP_NOINLINE VDP_HOT uint32_t sprScan2(const uint8_t *ys, int st, uint32_
     uint32_t dy = (y1 - sy) & 0xFF;
     if (dy >= h) continue;
     if (n >= 8) {
-      if (!ninth) ninth = 0x80 | (i << 8);                // 9枚目のステータスは制限なしでも実機どおり
-      if (!sprNoLimit) return n | ninth;
+      if (!sprNoLimit) {
+        if (!ninth) ninth = 0x80 | (i << 8);
+        return n | ninth;
+      }
     }
     vis[n++] = i | (dy << 8);
   }
