@@ -104,15 +104,26 @@ case LD_A_R:
 case LD_I_A:   R->I=R->AF.B.h;break;
 case LD_R_A:   break;
 
-case IM_0:     R->IFF&=~(IFF_IM1|IFF_IM2);break;
-case IM_1:     R->IFF=(R->IFF&~IFF_IM2)|IFF_IM1;break;
-case IM_2:     R->IFF=(R->IFF&~IFF_IM1)|IFF_IM2;break;
+/* 未定義命令の別コードは、もとの命令と同じ動作(ED 4C/54/5C/64/6C/74/7C = NEG、ED 55/5D/65/6D/75/7D = RETN、
+   ED 4E/66/6E = IM 0、ED 76 = IM 1、ED 7E = IM 2)。以前は何もしない 0 サイクルの命令になっていた。
+   ED 4E の列挙の名前は DB_(元のソースのまま) */
+case IM_0:
+case DB_: case DB_66: case DB_6E:
+               R->IFF&=~(IFF_IM1|IFF_IM2);break;
+case IM_1:
+case DB_76:    R->IFF=(R->IFF&~IFF_IM2)|IFF_IM1;break;
+case IM_2:
+case DB_7E:    R->IFF=(R->IFF&~IFF_IM1)|IFF_IM2;break;
 
 case RETI:
-case RETN:     if(R->IFF&IFF_2) R->IFF|=IFF_1; else R->IFF&=~IFF_1;
+case RETN:
+case DB_55: case DB_5D: case DB_65: case DB_6D: case DB_75: case DB_7D:
+               if(R->IFF&IFF_2) R->IFF|=IFF_1; else R->IFF&=~IFF_1;
                M_RET;break;
 
-case NEG:      I=R->AF.B.h;R->AF.B.h=0;M_SUB(I);break;
+case NEG:
+case DB_4C: case DB_54: case DB_5C: case DB_64: case DB_6C: case DB_74: case DB_7C:
+               I=R->AF.B.h;R->AF.B.h=0;M_SUB(I);break;
 
 case IN_B_xC:  M_IN(R->BC.B.h);break;
 case IN_C_xC:  M_IN(R->BC.B.l);break;
@@ -130,7 +141,9 @@ case OUT_xC_E: OutZ80(R->BC.W,R->DE.B.l);break;
 case OUT_xC_H: OutZ80(R->BC.W,R->HL.B.h);break;
 case OUT_xC_L: OutZ80(R->BC.W,R->HL.B.l);break;
 case OUT_xC_A: OutZ80(R->BC.W,R->AF.B.h);break;
-
+/* ED 71 = 未定義命令 OUT (C),0(NMOS の Z80 は 0 を出す。CSP z80.cpp も OUT8(BC, 0))。以前は何もしない 0 サイクルの
+   命令になっていた(X1 の Space Harrier(電波新聞社)が GVRAM の消去に使っていて見つかった) */
+case DB_71:    OutZ80(R->BC.W,0);break;
 case INI:
   WrZ80(R->HL.W++,InZ80(R->BC.W));
   --R->BC.B.h;

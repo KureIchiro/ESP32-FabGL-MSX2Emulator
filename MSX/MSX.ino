@@ -1597,7 +1597,7 @@ void handleDiskSelect(int drive) {
 
 // ---------------------------------------------------------------------------
 //  起動メニュー(MSX2版と同じ形)
-//    Slot1 / Slot2 / Disk BIOS / Disk1 / Disk2 / Mouse / Joy B1〜B3 / Run を ↑↓ で選び、Enter で変更・起動。
+//    Slot1 / Slot2 / Disk BIOS / DiskA / DiskB / Mouse / Joy B1〜B3 / Run を ↑↓ で選び、Enter で変更・起動。
 //    ポート1のコントローラでも操作できる(↑↓ 選択、←→ 1画面送り、ボタン1 = 決定、ボタン2 = 取り消し)。
 //    マウスをつないだポートのコントローラはキーボードとして働く: 方向 = カーソルキー、
 //    ボタン1〜3 = Joy B1〜B3 で決めたキー(Mouse = NONE のときは働かない。JoyKeys.hpp)。
@@ -1671,8 +1671,8 @@ static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capt
       case 0: snprintf(line, sizeof(line), "Slot1    : %.24s", slotLabel(bootSlot[0]).c_str()); break;
       case 1: snprintf(line, sizeof(line), "Slot2    : %.24s", slotLabel(bootSlot[1]).c_str()); break;
       case 2: snprintf(line, sizeof(line), "Disk BIOS: %s", !hasDiskRom ? "OFF (NO DISK.ROM)" : bootDiskBios ? "ON" : "OFF"); break;
-      case 3: snprintf(line, sizeof(line), "Disk1    : %.24s", bootDisk[0].c_str()); break;
-      case 4: snprintf(line, sizeof(line), "Disk2    : %.24s", bootDisk[1].c_str()); break;
+      case 3: snprintf(line, sizeof(line), "DiskA    : %.24s", bootDisk[0].c_str()); break;
+      case 4: snprintf(line, sizeof(line), "DiskB    : %.24s", bootDisk[1].c_str()); break;
       case 5: snprintf(line, sizeof(line), "Mouse    : %s", mouseName[bootMouse]); break;
       case 6: case 7: case 8:
         snprintf(line, sizeof(line), "Joy B%d   : %s", i - 5, (capture && i == cursor) ? "PRESS A KEY..." : msxKeyName(joyKey[i - 6]));
@@ -1761,7 +1761,7 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
         } else if (it == 3 || it == 4) {
           int d = it - 3;
           bootMenuInvalidate();
-          String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE 2 --" : "-- SELECT DISK FOR DRIVE 1 --",
+          String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE B --" : "-- SELECT DISK FOR DRIVE A --",
                                         SD_ROOT "/DISK", ".DSK", { ITEM_NONE }, bootDisk[d] == "" ? String(ITEM_NONE) : bootDisk[d]);
           if (sel != "") bootDisk[d] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it == 5) {
@@ -1775,7 +1775,7 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
 #ifdef USE_FDC
           if (hasDiskRom && bootDiskBios) {
             for (int d = 0; d < 2 && !msg; d++)
-              if (bootDisk[d] != "" && !loadSdToPsram(d, SD_ROOT "/DISK/" + bootDisk[d])) msg = d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
+              if (bootDisk[d] != "" && !loadSdToPsram(d, SD_ROOT "/DISK/" + bootDisk[d])) msg = d ? "DISKB LOAD ERROR" : "DISKA LOAD ERROR";
           }
 #endif
           if (!msg) {

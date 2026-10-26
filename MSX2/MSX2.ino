@@ -36,7 +36,7 @@
  *  SDカードの /MSX2 に FMPAC.ROM があると FM-PAC をスロット2に挿した構成になり、
  *  内蔵MSX-MUSIC(MSX2PMUS.ROM)は使わない(FM-PAC にしか対応しないソフト向け)。
  *
- *  起動メニュー: Slot1 / Slot2 / Disk BIOS / Disk1 / Disk2 / Mouse / Joy B1〜B3 / Run を ↑↓ で選び Enter。
+ *  起動メニュー: Slot1 / Slot2 / Disk BIOS / DiskA / DiskB / Mouse / Joy B1〜B3 / Run を ↑↓ で選び Enter。
  *   ポート1のコントローラでも操作できる(↑↓ 選択、←→ 1画面送り、ボタン1 = 決定、ボタン2 = 取り消し)。
  *   Slot2 の既定は FM-PAC(FMPAC.ROM があるとき)。ほかのROMを選ぶと内蔵MSX-MUSICになる。
  *   FM-PAC の SRAM は SD の /MSX2/FMPAC.PAC に自動で保存する(書き込みが止まって2秒後)。
@@ -54,7 +54,7 @@
  *  実行中: F12 一時停止 / Shift+F12 リセット / 一時停止中に F10・F11 でドライブ1・2のディスク
  *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす / Shift+F8 スプライトの横の枚数制限なし・あり /
  *   F6 Z80 の速さ Normal(205) → High(285) → Super(365)(1ラインのクロック数。画面下に0.5秒表示)
- *   ※ドライブ2は起動メニューで Disk2 を選んで起動したときだけつながる(実機の HB-F1XDJ と
+ *   ※ドライブ2は起動メニューで DiskB を選んで起動したときだけつながる(実機の HB-F1XDJ と
  *     同じく、選ばなければ1ドライブで、B: は A: を使う仮想ドライブになる)
  */
 
@@ -798,7 +798,7 @@ static bool loadCartridge(const String &path, int slot) {
 
 // ---------------------------------------------------------------------------
 //  起動メニュー
-//    Slot1 / Slot2 / Disk BIOS / Disk1 / Disk2 / Mouse / Joy B3 / Run を ↑↓ で選び、Enter で変更・起動。
+//    Slot1 / Slot2 / Disk BIOS / DiskA / DiskB / Mouse / Joy B3 / Run を ↑↓ で選び、Enter で変更・起動。
 //    選んでいる項目は反転表示。
 // ---------------------------------------------------------------------------
 // (BootConfig の定義は、Arduino が関数の宣言を自動で入れる位置より前に置くため先頭にある)
@@ -855,8 +855,8 @@ static void bootMenuDraw(const BootConfig &c, int cursor, bool hasDiskRom, const
       case 0: snprintf(line, sizeof(line), "Slot1    : %.46s", name(c.slot[0]).c_str()); break;
       case 1: snprintf(line, sizeof(line), "Slot2    : %.46s", name(c.slot[1]).c_str()); break;
       case 2: snprintf(line, sizeof(line), "Disk BIOS: %s", !hasDiskRom ? "OFF (NO DISK.ROM)" : c.diskBios ? "ON" : "OFF"); break;
-      case 3: snprintf(line, sizeof(line), "Disk1    : %.46s", c.disk[0].c_str()); break;
-      case 4: snprintf(line, sizeof(line), "Disk2    : %.46s", c.disk[1].c_str()); break;
+      case 3: snprintf(line, sizeof(line), "DiskA    : %.46s", c.disk[0].c_str()); break;
+      case 4: snprintf(line, sizeof(line), "DiskB    : %.46s", c.disk[1].c_str()); break;
       case 5: snprintf(line, sizeof(line), "Mouse    : %s", mouseName[c.mouse]); break;
       case 6: case 7: case 8:
         snprintf(line, sizeof(line), "Joy B%d   : %s", i - 5, (capture && i == cursor) ? "PRESS A KEY..." : msxKeyName(joyKey[i - 6]));
@@ -896,7 +896,7 @@ static const char *bootMenuApply(const BootConfig &c) {
   for (int d = 0; d < 2; d++) {
     if (!diskBuf[d]) continue;
     if (c.disk[d] == "") { wd2793SetDisk(d, nullptr, 0); diskPath[d][0] = 0; diskSize[d] = 0; continue; }
-    if (!loadDisk(d, SD_ROOT "/DISK/" + c.disk[d])) return d ? "DISK2 LOAD ERROR" : "DISK1 LOAD ERROR";
+    if (!loadDisk(d, SD_ROOT "/DISK/" + c.disk[d])) return d ? "DISKB LOAD ERROR" : "DISKA LOAD ERROR";
   }
   return nullptr;
 }
@@ -959,7 +959,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
         } else if (it == 3 || it == 4) {
           int d = it - 3;
           bootMenuInvalidate();
-          String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE 2 --" : "-- SELECT DISK FOR DRIVE 1 --",
+          String sel = showFileSelector(d ? "-- SELECT DISK FOR DRIVE B --" : "-- SELECT DISK FOR DRIVE A --",
                                         SD_ROOT "/DISK", ".DSK", { ITEM_NONE }, c.disk[d] == "" ? String(ITEM_NONE) : c.disk[d]);
           if (sel != "") c.disk[d] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it >= 6 && it <= 8) {
@@ -1073,7 +1073,7 @@ static void updateController() {
   }
   msx2_joy[0] = 0x40 | ((mousePortSel == 1 ? 0x7F : j1) & 0x3F);   // bit6=1: JIS配列
   msx2_joy[1] = 0x40 | ((mousePortSel == 2 ? 0x7F : j2) & 0x3F);
-  joyKeysApply(mousePortSel == 2 ? j2 : j1, mousePortSel != 0, msx2_key_matrix);
+  //joyKeysApply(mousePortSel == 2 ? j2 : j1, mousePortSel != 0, msx2_key_matrix);
 }
 
 // ---------------------------------------------------------------------------
