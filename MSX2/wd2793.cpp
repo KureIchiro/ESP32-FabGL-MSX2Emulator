@@ -23,22 +23,21 @@
 #include "msx2.h"
 #include <string.h>
 
-// 時間はラインの数で測る(15.734kHz)
-static const uint32_t LINES_PER_ROT  = 3147;   // 300rpm = 1回転 200ms
-static const uint32_t INDEX_LINES    = 63;     // インデックスパルスの幅 約4ms
-static const uint32_t SWAP_GAP_LINES = 4720;   // 入れ替えのとき、ディスクが無いことにする時間 約0.3s
+static const uint32_t LINES_PER_ROT  = 3147;
+static const uint32_t INDEX_LINES    = 63;
+static const uint32_t SWAP_GAP_LINES = 4720;
 static const int      MAX_TRACK      = 83;
-static const int      TRACK_BYTES    = 6250;   // 2DD 1トラックの生データ(Write Track で受け取る量)
-static const uint16_t STEP_LINES[4]  = { 94, 189, 315, 472 };   // 1ステップ 6/12/20/30ms
+static const int      TRACK_BYTES    = 6250;
+static const uint16_t STEP_LINES[4]  = { 94, 189, 315, 472 };
 
 struct Disk {
   uint8_t *buf;
   uint32_t size;
   uint8_t  sides, sectors;
-  uint8_t  head;            // ヘッドの位置(物理トラック)。トラックレジスタとは別に持つ
-  bool     connected;       // ドライブがあるか(A は常に。B はイメージを入れたことがあれば)
-  bool     changed;         // 入れ替えた印(7FFD の bit2 で1回だけ返す)
-  bool     gap;             // 入れ替え中(gapEnd まではディスクが無い)
+  uint8_t  head;
+  bool     connected;
+  bool     changed;
+  bool     gap;
   uint32_t gapEnd;
 };
 static Disk disk[2] = { { nullptr, 0, 0, 0, 0, true, false, false, 0 },
@@ -47,14 +46,14 @@ static Disk disk[2] = { { nullptr, 0, 0, 0, 0, true, false, false, 0 },
 enum Mode { M_IDLE, M_READ, M_WRITE, M_READADDR, M_WRITETRACK };
 static Mode     mode;
 static uint8_t  regStatus, regTrack, regSector = 1, regData, regSide, driveReg;
-static int      curDrive;                   // -1 = どのドライブも選んでいない
+static int      curDrive;
 static uint8_t *sectorPtr;
-static bool     typeI = true;               // ステータスを Type I の形で返すか
+static bool     typeI = true;
 static bool     multiSector, intrq, intrqHold, headLoaded;
 static int      dataIndex, dataLen;
 static int      stepDir = -1;
 static uint8_t  idField[6], idSector = 1;
-static bool     seeking;                    // Type I でヘッドを動かしている(seekEnd まで BUSY)
+static bool     seeking;
 static uint32_t seekEnd;
 
 void wd2793Reset() {
@@ -66,7 +65,6 @@ void wd2793Reset() {
   seeking = false;
 }
 
-// ヘッドの移動が終わる時刻を過ぎていれば終わらせる(INTRQ を出す)
 static void seekPoll() {
   if (seeking && (int32_t)(msx2LineClock() - seekEnd) >= 0) {
     seeking = false;
@@ -80,13 +78,10 @@ void wd2793SetDisk(int d, uint8_t *buf, uint32_t size) {
   k.buf = buf;
   k.size = buf ? size : 0;
   k.changed = true;
-  // 実行中の入れ替えは、実機と同じく一度ディスクが抜けた状態を通す(起動前は不要)
   k.gap = (msx2LineClock() != 0);
   k.gapEnd = msx2LineClock() + SWAP_GAP_LINES;
   if (!buf) return;
   k.connected = true;
-  // ブートセクタに正しい BPB があればそれに従う(片面 360KB の中身を 720KB のファイルに
-  // 入れたイメージがある。破邪の封印のユーザーディスク: 総セクタ数720・片面)
   {
     uint16_t bps = buf[0x0B] | (buf[0x0C] << 8), tot = buf[0x13] | (buf[0x14] << 8);
     uint16_t spt = buf[0x18] | (buf[0x19] << 8), heads = buf[0x1A] | (buf[0x1B] << 8);
@@ -97,17 +92,13 @@ void wd2793SetDisk(int d, uint8_t *buf, uint32_t size) {
       return;
     }
   }
-  // BPB が無ければサイズで決める(DSK はセクタを並べただけ)。
-  // (ゲームのデータディスクは先頭セクタもデータで BPB が無く、media byte の位置に
-  //  たまたま F8h などがあると片面と誤判定して別のセクタを渡し、入れ替えを受け付けなかった)
   switch (size) {
-    case 737280: k.sectors = 9; k.sides = 2; return;   // 2DD 9セクタ
-    case 368640: k.sectors = 9; k.sides = 1; return;   // 1DD 9セクタ
-    case 655360: k.sectors = 8; k.sides = 2; return;   // 2DD 8セクタ
-    case 327680: k.sectors = 8; k.sides = 1; return;   // 1DD 8セクタ
+    case 737280: k.sectors = 9; k.sides = 2; return;
+    case 368640: k.sectors = 9; k.sides = 1; return;
+    case 655360: k.sectors = 8; k.sides = 2; return;
+    case 327680: k.sectors = 8; k.sides = 1; return;
     default: break;
   }
-  // 標準外のサイズのときは、ブートセクタの BPB(1トラックのセクタ数 / ヘッド数)を見る。変なら media byte で決める。
   uint16_t spt = buf[0x18] | (buf[0x19] << 8), heads = buf[0x1A] | (buf[0x1B] << 8);
   if ((spt == 8 || spt == 9) && (heads == 1 || heads == 2)) {
     k.sectors = (uint8_t)spt;
@@ -132,7 +123,6 @@ bool wd2793Busy() { return mode != M_IDLE; }
 
 static Disk *selected() { return curDrive >= 0 ? &disk[curDrive] : nullptr; }
 
-// ディスクが入っていて読める状態か(入れ替え中は入っていない扱い)
 static bool ready() {
   Disk *k = selected();
   if (!k || !k->connected || !k->buf) return false;
@@ -147,8 +137,6 @@ static bool indexPulse() {
   return ready() && (msx2LineClock() % LINES_PER_ROT) < INDEX_LINES;
 }
 
-// head のトラック・side 面・sector 番のセクタ。ID のトラック番号(=ヘッドの位置)が
-// トラックレジスタと違う、片面ディスクの裏面、範囲外は見つからない(Record Not Found)。
 static uint8_t *sectorAtHead(uint8_t side, uint8_t sector) {
   Disk *k = selected();
   if (!k || !k->buf) return nullptr;
@@ -175,16 +163,16 @@ static void typeICommand(uint8_t cmd) {
   Disk *k = selected();
   bool connected = k && k->connected;
   bool update = (cmd & 0x10) != 0;
-  int steps = 1;                                    // 出すステップパルスの数
+  int steps = 1;
   regStatus = 0;
   if (cmd & 0x08) headLoaded = true;
   switch (cmd & 0xE0) {
     case 0x00:
-      if (!(cmd & 0x10)) {                          // Restore: TRACK00 まで戻す
+      if (!(cmd & 0x10)) {
         stepDir = -1;
         if (connected) { steps = k->head; k->head = 0; regTrack = 0; }
-        else regStatus |= 0x10;                     // TRACK00 が来ない = ドライブが無い(Seek Error)
-      } else {                                      // Seek: トラックレジスタがデータレジスタになるまで
+        else regStatus |= 0x10;
+      } else {
         int diff = (int)regData - (int)regTrack;
         if (diff) stepDir = diff > 0 ? 1 : -1;
         steps = diff < 0 ? -diff : diff;
@@ -192,16 +180,15 @@ static void typeICommand(uint8_t cmd) {
         regTrack = regData;
       }
       break;
-    case 0x20: moveHead(stepDir); if (update) regTrack += stepDir; break;                  // Step
-    case 0x40: stepDir = 1;  moveHead(1);  if (update) regTrack++; break;                  // Step In
-    case 0x60: stepDir = -1; moveHead(-1); if (update && regTrack > 0) regTrack--; break;  // Step Out
+    case 0x20: moveHead(stepDir); if (update) regTrack += stepDir; break;
+    case 0x40: stepDir = 1;  moveHead(1);  if (update) regTrack++; break;
+    case 0x60: stepDir = -1; moveHead(-1); if (update && regTrack > 0) regTrack--; break;
   }
-  if (cmd & 0x04) {                                 // Verify: ヘッドの位置とトラックレジスタを比べる
+  if (cmd & 0x04) {
     headLoaded = true;
     if (!ready() || regTrack != k->head) regStatus |= 0x10;
   }
   typeI = true;
-  // ヘッドを動かす時間だけ BUSY にして、終わったら INTRQ(つながっていないドライブは今までどおりすぐ)
   if (connected && steps > 0) {
     seeking = true;
     seekEnd = msx2LineClock() + (uint32_t)steps * STEP_LINES[cmd & 3];
@@ -211,19 +198,17 @@ static void typeICommand(uint8_t cmd) {
 }
 
 static void command(uint8_t cmd) {
-  // INTRQ はステータス読み出しか、新しいコマンドの書き込みで下がる。
-  // 前のコマンドのINTRQが残っていると、完了待ちのBIOSが「即完了」と誤認する。
   intrq = intrqHold = false;
   dataIndex = 0;
-  seeking = false;                                  // (移動中に来たら、移動はここで終わったことにする)
+  seeking = false;
 
-  if ((cmd & 0xF0) == 0xD0) {                       // Type IV: Force Interrupt
+  if ((cmd & 0xF0) == 0xD0) {
     mode = M_IDLE;
     typeI = true;
     regStatus = 0;
-    if (cmd & 0x08) { intrq = intrqHold = true; }   // D8: すぐ割り込み(次のコマンドまで保持)
-    else if (cmd & 0x04) intrq = true;              // D4: 次のインデックスで割り込み(すぐ出す)
-    return;                                         // D0: 割り込みなしで止めるだけ
+    if (cmd & 0x08) { intrq = intrqHold = true; }
+    else if (cmd & 0x04) intrq = true;
+    return;
   }
   if ((cmd & 0x80) == 0) { typeICommand(cmd); return; }
 
@@ -232,33 +217,33 @@ static void command(uint8_t cmd) {
   mode = M_IDLE;
   if (!ready()) { regStatus = 0x80; intrq = true; return; }
 
-  if ((cmd & 0xC0) == 0x80) {                       // Type II: Read / Write Sector
+  if ((cmd & 0xC0) == 0x80) {
     multiSector = (cmd & 0x10) != 0;
     sectorPtr = sectorPointer(regSide, regSector);
-    if (!sectorPtr) { regStatus = 0x10; intrq = true; return; }   // Record Not Found
+    if (!sectorPtr) { regStatus = 0x10; intrq = true; return; }
     mode = ((cmd & 0xE0) == 0x80) ? M_READ : M_WRITE;
     dataLen = 512;
-    regStatus = 0x03;                               // BUSY + DRQ
+    regStatus = 0x03;
     return;
   }
   switch (cmd & 0xF0) {
-    case 0xC0: {                                    // Read Address: 次に来るセクタの ID
+    case 0xC0: {
       Disk *k = selected();
       if (idSector < 1 || idSector > k->sectors) idSector = 1;
-      idField[0] = k->head; idField[1] = regSide; idField[2] = idSector; idField[3] = 2;  // 512バイト
-      idField[4] = idField[5] = 0;                  // CRC(見ない)
+      idField[0] = k->head; idField[1] = regSide; idField[2] = idSector; idField[3] = 2;
+      idField[4] = idField[5] = 0;
       idSector = (uint8_t)(idSector % k->sectors + 1);
       mode = M_READADDR;
       dataLen = 6;
       regStatus = 0x03;
       return;
     }
-    case 0xF0:                                      // Write Track (フォーマット)
+    case 0xF0:
       mode = M_WRITETRACK;
       dataLen = TRACK_BYTES;
       regStatus = 0x03;
       return;
-    default:                                        // Read Track: データは返さず、すぐ終わる
+    default:
       regStatus = 0;
       intrq = true;
       return;
@@ -275,12 +260,12 @@ static uint8_t status() {
   if (!intrqHold) intrq = false;
   if (typeI) {
     Disk *k = selected();
-    uint8_t s = regStatus & 0x18;                   // Seek Error / CRC
-    if (!ready()) s |= 0xC0;                        // NOT READY (ディスクが無いと書き込み禁止にも見える)
+    uint8_t s = regStatus & 0x18;
+    if (!ready()) s |= 0xC0;
     if (headLoaded && ready()) s |= 0x20;
-    if (k && k->connected && k->head == 0) s |= 0x04;   // ドライブが無ければ TRACK00 にならない
+    if (k && k->connected && k->head == 0) s |= 0x04;
     if (indexPulse()) s |= 0x02;
-    if (seeking) s |= 0x01;                         // BUSY
+    if (seeking) s |= 0x01;
     return s;
   }
   uint8_t s = regStatus;
@@ -297,7 +282,7 @@ static uint8_t status() {
 static uint8_t readData() {
   if (mode == M_READADDR) {
     uint8_t v = idField[dataIndex++];
-    if (dataIndex >= 6) { regSector = idField[0]; finish(0); }   // ID のトラック番号がセクタレジスタに入る
+    if (dataIndex >= 6) { regSector = idField[0]; finish(0); }
     return v;
   }
   if (mode != M_READ || !sectorPtr) return regData;
@@ -308,7 +293,7 @@ static uint8_t readData() {
       regSector++;
       sectorPtr = sectorPointer(regSide, regSector);
       if (sectorPtr) { dataIndex = 0; return v; }
-      finish(0x10);                                 // 次のセクタが無い: Record Not Found で終わる
+      finish(0x10);
       return v;
     }
     finish(0);
@@ -320,7 +305,6 @@ static void writeData(uint8_t v) {
   regData = v;
   if (mode == M_WRITETRACK) {
     if (++dataIndex >= TRACK_BYTES) {
-      // フォーマット: ヘッドの位置のトラック・面のセクタを E5h で埋める(ID の書き換えは扱わない)
       Disk *k = selected();
       for (int s = 1; k && s <= k->sectors; s++) {
         uint8_t *p = sectorAtHead(regSide, (uint8_t)s);
@@ -376,7 +360,7 @@ void msx2FdcWrite(int r, uint8_t v) {
   switch (r & 7) {
     case 0:
       command(v);
-      if (wd2793CmdHook) wd2793CmdHook(v, regTrack, regSector, regSide, curDrive, regStatus);   // PC のテスト用
+      if (wd2793CmdHook) wd2793CmdHook(v, regTrack, regSector, regSide, curDrive, regStatus);
       break;
     case 1: regTrack = v; break;
     case 2: regSector = v; break;

@@ -13,7 +13,6 @@
 
 /** This is a special patch for emulating BIOS calls: ********/
 case DB_FE:     PatchZ80(R);break;
-/*************************************************************/
 
 case ADC_HL_BC: M_ADCW(BC);break;
 case ADC_HL_DE: M_ADCW(DE);break;
@@ -104,9 +103,6 @@ case LD_A_R:
 case LD_I_A:   R->I=R->AF.B.h;break;
 case LD_R_A:   break;
 
-/* 未定義命令の別コードは、もとの命令と同じ動作(ED 4C/54/5C/64/6C/74/7C = NEG、ED 55/5D/65/6D/75/7D = RETN、
-   ED 4E/66/6E = IM 0、ED 76 = IM 1、ED 7E = IM 2)。以前は何もしない 0 サイクルの命令になっていた。
-   ED 4E の列挙の名前は DB_(元のソースのまま) */
 case IM_0:
 case DB_: case DB_66: case DB_6E:
                R->IFF&=~(IFF_IM1|IFF_IM2);break;
@@ -141,8 +137,6 @@ case OUT_xC_E: OutZ80(R->BC.W,R->DE.B.l);break;
 case OUT_xC_H: OutZ80(R->BC.W,R->HL.B.h);break;
 case OUT_xC_L: OutZ80(R->BC.W,R->HL.B.l);break;
 case OUT_xC_A: OutZ80(R->BC.W,R->AF.B.h);break;
-/* ED 71 = 未定義命令 OUT (C),0(NMOS の Z80 は 0 を出す。CSP z80.cpp も OUT8(BC, 0))。以前は何もしない 0 サイクルの
-   命令になっていた(X1 の Space Harrier(電波新聞社)が GVRAM の消去に使っていて見つかった) */
 case DB_71:    OutZ80(R->BC.W,0);break;
 case INI:
   WrZ80(R->HL.W++,InZ80(R->BC.W));

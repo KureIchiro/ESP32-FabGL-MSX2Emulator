@@ -2,11 +2,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <esp_attr.h>  // これで IRAM_ATTR が使えるようになります
-#include <string.h>    // memsetなどを使っている場合
+#include <esp_attr.h>
+#include <string.h>
 #include "tms9918a.h"
 
-// IRAM の描画関数から呼ぶ小さな関数は必ず展開する(-Os だとフラッシュの関数のまま呼ばれる)
 #if defined(__GNUC__)
 #define TMS_INLINE static inline __attribute__((always_inline))
 #else
@@ -14,19 +13,9 @@
 #endif
 
 uint8_t sram_framebuffer[16384] DRAM_ATTR __attribute__((aligned(4)));
-/*
- *	Sprites
- */
 
-/*
- *	Draw a horizontal slice of a sprite into the render buffer. If it
- *	needs magnifying then do the magnification as we render. We use a
- *	simple line buffer to detect collisions
- */
-// 4ビットのパターンを32bitの色データに展開するヘルパー
 static inline uint32_t expand_bits_to_color(uint8_t nibble, uint8_t color) {
 	uint32_t res = 0;
-	// リトルエンディアン(ESP32)を想定した並び
 	if (nibble & 0x08) res |= (uint32_t)color;
 	if (nibble & 0x04) res |= (uint32_t)color << 8;
 	if (nibble & 0x02) res |= (uint32_t)color << 16;
@@ -34,15 +23,12 @@ static inline uint32_t expand_bits_to_color(uint8_t nibble, uint8_t color) {
 	return res;
 }
 
-// 拡大用：2ビット(拡大後4px分)を32bitカラーデータに展開
 static inline uint32_t expand_mag_bits_to_color(uint8_t two_bits, uint8_t color) {
 	uint32_t res = 0;
-	// bit1 (左側) が 1 なら 0,1ピクセル目を塗る
 	if (two_bits & 0x02) {
 		res |= (uint32_t)color;
 		res |= (uint32_t)color << 8;
 	}
-	// bit0 (右側) が 1 なら 2,3ピクセル目を塗る
 	if (two_bits & 0x01) {
 		res |= (uint32_t)color << 16;
 		res |= (uint32_t)color << 24;
@@ -88,7 +74,6 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 			}
 		}
 	} else {
-		// --- Magnify（2倍拡大）モード ---
 		for (int i = 0; i < (int)width; i += 2) {
 			int target_x = x + (i * 2);
 			uint8_t two_bits = (uint8_t)((bits >> (14 - i)) & 0x03);
@@ -123,8 +108,6 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 	}
 }
 
-// このラインのパターン(16ドット、上位ビットが左。8x8 は上位8ビットだけ)。
-// spdat はパターンの先頭(16x16 のときは番号の下位2ビットを落としてある)
 TMS_INLINE uint16_t tms9918a_sprite_bits(struct tms9918a *vdp, int y, const uint8_t *sprat, const uint8_t *spdat) {
 	int row = *sprat;
 	if (row > 0xE0)
@@ -134,7 +117,7 @@ TMS_INLINE uint16_t tms9918a_sprite_bits(struct tms9918a *vdp, int y, const uint
 	if (vdp->reg[1] & 0x01)
 		row >>= 1;
 	if ((vdp->reg[1] & 0x02) == 0)
-		return (uint16_t)(spdat[row] << 8);   // 以前は << 24 で16bitに入りきらず0になり、8x8 が出なかった
+		return (uint16_t)(spdat[row] << 8);
 	return (uint16_t)((spdat[row] << 8) | spdat[row + 16]);
 }
 
@@ -143,7 +126,6 @@ static IRAM_ATTR void tms9918a_render_sprite(struct tms9918a *vdp, int y, uint8_
 	tms9918a_render_slice(vdp, y, sprat, tms9918a_sprite_bits(vdp, y, sprat, spdat), width);
 }
 
-// 衝突判定用: 16ドットのパターン → 32ドットのマスク(bit31 が左端。拡大なら各ドットを2つに)
 TMS_INLINE uint32_t tms9918a_sprite_mask(uint16_t bits, int mag) {
 	uint32_t b = bits;
 	if (!mag) return b << 16;
@@ -167,7 +149,6 @@ void prepare_sprites(struct tms9918a *vdp) {
 		if (ypos > 0xE0) ypos -= 256;
 		ypos += 1;
 
-		// このスプライトが存在する行の範囲だけリストに追加
 		int start_y = (ypos < 0) ? 0 : ypos;
 		int end_y = (ypos + spheight > 192) ? 192 : ypos + spheight;
 
@@ -184,23 +165,16 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 	uint8_t *spdat = vdp->framebuffer + ((vdp->reg[6] & 0x07) << 11);
 	unsigned int spshft = 3;
 
-	// 16x16 のときパターン番号の下位2ビットは使わない(実機と同じ)
 	uint8_t patMask = (vdp->reg[1] & 0x02) ? 0xFC : 0xFF;
 
-	// プリスキャン済みのリストから枚数を取得
 	int count = vdp->sprite_line_count[y];
 
-	// --- スプライト描画のループ（逆順にする） ---
 	if (vdp->limit_sprites && count > 4) {
-		// 5枚目: 5S と番号は最初に起きたものを読まれるまで保つ(以前は OR で番号が混ざっていた)
 		if (!(vdp->status & 0x40))
 			vdp->status = (vdp->status & 0xA0) | 0x40 | (vdp->sprite_line_list[y][4] & 0x1F);
-		count = 4;  // 描画は4枚で打ち切り
+		count = 4;
 	}
 
-	// 衝突(ステータス bit5): 表示するスプライトのうち2枚の「1」のドットが重なったら立てる。
-	// 色0(透明)のスプライトも数える(実機と同じ)。画面の外(x<0, x>255)のドットは数えない。
-	// どのドットにもう出ているかを 256ビットのマスクで持って重なりを調べる。
 	if (count > 1 && !(vdp->status & 0x20)) {
 		uint32_t occ[9] = { 0 };
 		int mag = vdp->reg[1] & 0x01;
@@ -217,12 +191,10 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 		}
 	}
 
-	// 番号が大きい順（奥から手前）に描画
 	for (int n = count - 1; n >= 0; n--) {
 		uint8_t i = vdp->sprite_line_list[y][n];
 		uint8_t *sprat = sprat_base + (i * 4);
 
-		// 色番号0（透明）なら関数自体呼ばない
 		uint8_t foreground = sprat[3] & 0x0F;
 		if (foreground == 0) continue;
 
@@ -231,7 +203,6 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 }
 
 static IRAM_ATTR void tms9918a_raster_sprites(struct tms9918a *vdp) {
-	// ★最適化: 衝突判定バッファのクリアは1フレームに1回で十分！
 	memset(vdp->colbuf, 0xFF, sizeof(vdp->colbuf));
 
 	unsigned int i;
@@ -239,7 +210,6 @@ static IRAM_ATTR void tms9918a_raster_sprites(struct tms9918a *vdp) {
 		tms9918a_sprite_line(vdp, i);
 }
 
-/* ★大改修：スキャンライン単位＆32bit一括書き込み G1モード */
 static void IRAM_ATTR tms9918a_rasterize_g1(struct tms9918a *vdp) {
 	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
 	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
@@ -264,7 +234,6 @@ static void IRAM_ATTR tms9918a_rasterize_g1(struct tms9918a *vdp) {
 	tms9918a_raster_sprites(vdp);
 }
 
-/* ★大改修：スキャンライン単位＆32bit一括書き込み G2モード（MSXで一番重いモード） */
 static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
 	uint8_t *pattern0 = vdp->framebuffer + ((vdp->reg[4] & 0x04) << 11);
@@ -275,7 +244,6 @@ static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 		uint8_t *pattern = pattern0;
 		uint8_t *colour = colour0;
 
-		// 画面の上下で参照アドレスを切り替える
 		if (char_row >= 8 && char_row < 16) {
 			if (vdp->reg[4] & 0x01) pattern += 0x0800;
 			if (vdp->reg[3] & 0x20) colour += 0x0800;
@@ -301,7 +269,6 @@ static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 	tms9918a_raster_sprites(vdp);
 }
 
-/* ★大改修：スキャンライン単位 MCモード */
 static void IRAM_ATTR tms9918a_rasterize_mc(struct tms9918a *vdp) {
 	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
 	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
@@ -329,7 +296,6 @@ static void IRAM_ATTR tms9918a_rasterize_mc(struct tms9918a *vdp) {
 	tms9918a_raster_sprites(vdp);
 }
 
-/* ★大改修：スキャンライン単位 TEXTモード */
 static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
 	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
 	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
@@ -344,7 +310,6 @@ static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
 			uint8_t *p_line = p_base + char_row * 40;
 			uint8_t *line_start = out;
 
-			// Left Border (8px) - 32bitベタ塗りはスワップ不要
 			*((uint32_t *)out) = bg_block;
 			out += 4;
 			*((uint32_t *)out) = bg_block;
@@ -363,7 +328,6 @@ static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
 			}
 			out += 240;
 
-			// Right Border (8px)
 			*((uint32_t *)out) = bg_block;
 			out += 4;
 			*((uint32_t *)out) = bg_block;
@@ -379,7 +343,7 @@ void IRAM_ATTR tms9918a_rasterize(struct tms9918a *vdp) {
 
 	uint8_t backdrop = vdp->colourmap[vdp->reg[7] & 0x0F];
 	if ((vdp->reg[1] & 0x40) == 0)
-		memset(vdp->active_raster, backdrop, 256 * 192);  // 画面OFF時：バックドロップ色で塗る
+		memset(vdp->active_raster, backdrop, 256 * 192);
 	else {
 		switch (mode) {
 			case 0: tms9918a_rasterize_g1(vdp); break;
@@ -409,19 +373,19 @@ void IRAM_ATTR tms9918a_write(struct tms9918a *vdp, uint8_t addr, uint8_t val) {
 			}
 			vdp->latch = 0;
 			switch (val & 0xC0) {
-				case 0x00:  // Read set up
+				case 0x00:
 					vdp->addr &= 0xFF;
 					vdp->addr |= (val << 8);
 					vdp->read = 1;
 					vdp->addr &= vdp->memmask;
 					break;
-				case 0x40:  // Write set up
+				case 0x40:
 					vdp->addr &= 0xFF;
 					vdp->addr |= (val << 8);
 					vdp->addr &= vdp->memmask;
 					vdp->read = 0;
 					break;
-				case 0x80:  // Reg write
+				case 0x80:
 					vdp->reg[val & 7] = vdp->addr & 0xFF;
 					break;
 			}
@@ -434,7 +398,7 @@ uint8_t IRAM_ATTR tms9918a_read(struct tms9918a *vdp, uint8_t addr) {
 		r = vdp->framebuffer[vdp->addr++ & vdp->memmask];
 	} else {
 		r = vdp->status;
-		vdp->status = 0;  // Read status clears it
+		vdp->status = 0;
 	}
 	vdp->latch = 0;
 	return r;
@@ -449,8 +413,6 @@ void tms9918a_reset(struct tms9918a *vdp) {
 }
 
 struct tms9918a *tms9918a_create(void) {
-	// ps_malloc が使えない環境（PSRAMなし等）を考慮し、
-	// 汎用的な malloc を使用。必要に応じて ps_malloc に戻してください。
 	struct tms9918a *vdp = (struct tms9918a *)ps_malloc(sizeof(struct tms9918a));
 	if (vdp) {
 		memset(vdp, 0, sizeof(struct tms9918a));
@@ -468,7 +430,6 @@ int tms9918a_irq_pending(struct tms9918a *vdp) {
 }
 
 void IRAM_ATTR flip_buffer(struct tms9918a *vdp) {
-	// ポインタの入れ替えによるダブルバッファリング
 	vdp->visible_raster = vdp->active_raster;
 	if (vdp->active_raster == vdp->rasterbuffer0) {
 		vdp->active_raster = vdp->rasterbuffer1;

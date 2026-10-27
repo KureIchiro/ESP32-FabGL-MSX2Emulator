@@ -13,20 +13,14 @@
 #include <stdio.h>
 #endif
 
-// ---------------------------------------------------------------------------
-//  Z80
-// ---------------------------------------------------------------------------
-// MSX2 の Z80 は M1 サイクルごとに1ウェイト入る。MSX1版と同じく、その分を
-// 1ラインの実行サイクル数を減らして近似する(228 × 約0.9)。
-// msx2SetCpuCycles で速くできる(フロントエンドの F11: 205 → 270 → 335)。
-static int cpuCyclesPerLine = 205;
+static int cpuCyclesPerLine = 228;
 #define CPU_CYCLES_PER_LINE cpuCyclesPerLine
 
 extern "C" {
   Z80 msx2_cpu;
-  uint8_t *op_map[8];                  // 命令読み込み用(Z80.c の OpZ80 が直接引く)
-  uint8_t *msx2_rd_map[8];             // データ読み出し用(Z80.c の RdZ80 が直接引く。nullptr = RdZ80Slow)
-  uint8_t *msx2_wr_map[8];             // データ書き込み用(Z80.c の WrZ80 が直接引く。nullptr = WrZ80Slow)
+  uint8_t *op_map[8];
+  uint8_t *msx2_rd_map[8];
+  uint8_t *msx2_wr_map[8];
   byte RdZ80Slow(zword a);
   void WrZ80Slow(zword a, byte v);
   byte RdZ80(zword a);
@@ -36,65 +30,48 @@ extern "C" {
   void PatchZ80(Z80 *R);
 }
 
-// ---------------------------------------------------------------------------
-//  スロット
-// ---------------------------------------------------------------------------
-static MSX2_DRAM uint8_t emptyPage[0x2000];        // 何もないところ(0xFF)
-static uint8_t *pageRd[4][4][8];                    // [基本][拡張][8KBページ] nullptr=空き
-static uint8_t *pageWr[4][4][8];                    // nullptr=書けない(ROM/空き)
-static bool expanded[4] = { true, false, false, true };   // msx2SetSlotExpanded で変更可
-static uint8_t psr;                                 // A8h 基本スロット
-static uint8_t ssr[4];                              // FFFFh 拡張スロット
+static MSX2_DRAM uint8_t emptyPage[0x2000];
+static uint8_t *pageRd[4][4][8];
+static uint8_t *pageWr[4][4][8];
+static bool expanded[4] = { true, false, false, true };
+static uint8_t psr;
+static uint8_t ssr[4];
 
-// データの読み書きの表(Z80.c の RdZ80/WrZ80 が直接引く)。nullptr = readSpecial() / writeSpecial() へ
+static uint8_t *diskRom;
+static bool     diskVisible;
 
-static uint8_t *diskRom;                            // 3-2
-static bool     diskVisible;                        // 6000h-7FFFh にディスクROMが見えている
-
-// ---- メモリマッパー (3-0) ----
 static uint8_t *ramSeg[MSX2_MAPPER_SEGMENTS];
-static uint8_t  mapReg[4];                          // FCh-FFh
+static uint8_t  mapReg[4];
 
-// ---- カートリッジ (スロット1, 2) ----
 struct Cart {
   uint8_t   *rom;
-  uint32_t   mask8k;                               // 8KBバンク番号のマスク
+  uint32_t   mask8k;
   Msx2Mapper mapper;
-  uint8_t    bank[4];                              // 4000h/6000h/8000h/A000h の8KBバンク
+  uint8_t    bank[4];
   bool       sccActive;
 };
-static Cart cart[3];                                 // [1],[2] を使う
-// SCC の波形メモリ(読み出し用。音はフロントエンドの msx2SccWrite が鳴らす)。
-// SCC モードでは ch4 と ch5 が 9860h〜987Fh の波形を共用する。SD スナッチャーは
-// 9000h に 3Fh を書いて 9800h〜 を読み書きし、SCC があるスロットを探す。
+static Cart cart[3];
 static uint8_t sccWave[4][32];
-static bool    sccReadable;                          // 今 9800h〜9FFFh で SCC が読める(ページ4のデータ読み出しを readSpecial へ)
+static bool    sccReadable;
 
-// ---- FM-PAC (スロット2。あればスロット2のカートリッジより優先) ----
-//   4000h-7FFFh: ROM 16KB × 最大4バンク(7FF7h で選択)
-//   7FF6h: bit0=I/Oポート 7Ch/7Dh を有効化, bit4=SRAMの鍵(5FFEh/5FFFh)をリセットして固定
-//   7FF4h/7FF5h: OPLL のアドレス/データ(メモリ書き込み。7FF6h に関係なく効く)
-//   5FFEh=4Dh かつ 5FFFh=69h で 4000h-5FFDh が 8KB SRAM になる(6000h-7FFFh は FFh)
-//   動作は openMSX の MSXFmPac と同じ。
 struct FmPac {
   uint8_t *rom;
   uint8_t  bankMask;
-  uint8_t *sram;                                     // 8KB
-  uint8_t  enable;                                   // 7FF6h
-  uint8_t  bank;                                     // 7FF7h
-  uint8_t  r1ffe, r1fff;                             // 5FFEh / 5FFFh
+  uint8_t *sram;
+  uint8_t  enable;
+  uint8_t  bank;
+  uint8_t  r1ffe, r1fff;
   bool     sramOn;
 };
 static FmPac fmpac;
-static bool  fmpacVisible;                           // ページ1にスロット2が見えている
-static volatile uint32_t fmpacSramWrites;            // SRAM の中身を変えた回数(フロントエンドが SD に保存する目安)
+static bool  fmpacVisible;
+static volatile uint32_t fmpacSramWrites;
 
-// ---- 漢字ROM / RTC / その他I/O ----
 static uint8_t *kanjiFont;
 static uint32_t kanjiSize;
-static uint32_t kanjiAddr[2];                        // 第1水準 / 第2水準
+static uint32_t kanjiAddr[2];
 static uint8_t  f4reg;
-static bool     f4Inverted;                          // F4h(リセット状態)がビット反転型の機種か
+static bool     f4Inverted;
 static uint8_t  ppiC;
 static uint8_t  psgAddr, psgReg[16];
 static bool     fmEnabled;
@@ -102,36 +79,28 @@ static bool     fmEnabled;
 volatile uint8_t msx2_key_matrix[16];
 volatile uint8_t msx2_joy[2] = { 0x7F, 0x7F };
 
-// ---- マウス(openMSX の MSXMouse と同じ) ----
-//   ジョイスティック端子の 8 番ピン(PSG R#15 bit4 = ポート1、bit5 = ポート2)を切り替えるたびに
-//   X 上位4bit → X 下位4bit → Y 上位4bit → Y 下位4bit の順に R#14 の下位4bit で返す。
-//   Y 下位を読んだあとの切り替えで、その間に動いた量を取り込む(左・上が +、-127〜127)。
-//   ボタンはトリガ A(bit4)= 左、B(bit5)= 右(0 = 押下)。
-volatile int32_t msx2_mouse_x, msx2_mouse_y;          // フロントエンドが積算する(右・上が +)
+volatile int32_t msx2_mouse_x, msx2_mouse_y;
 volatile uint8_t msx2_mouse_buttons;
-static int     mousePort;                             // 0 = なし、1 / 2
+static int     mousePort;
 static int     mousePhase = 3;
 static int8_t  mouseRelX, mouseRelY;
 static int32_t mouseLastX, mouseLastY;
 void msx2SetMousePort(int port) { mousePort = (port == 1 || port == 2) ? port : 0; }
 
-// 最後に 8 番ピンを切り替えた時刻(ライン)。しばらく切り替えが無い(マウスとして読んでいない)ときは、
-// 方向のビットを「押していない」にする。止まっているマウスの移動量 0 はジョイスティックとして読むと
-// 全方向が押された形になり、ポート1も読むゲーム(Aleste など)でカーソルキーが効かなくなっていた
 static uint32_t mouseStrobeAt;
 static bool     mouseStrobed;
-static const uint32_t MOUSE_IDLE_LINES = 262 * 4;     // 約 4 フレーム
+static const uint32_t MOUSE_IDLE_LINES = 262 * 4;
 
 static void mouseStrobe() {
   mouseStrobeAt = msx2LineClock();
   mouseStrobed = true;
   if (mousePhase == 3) {
     int32_t x = msx2_mouse_x, y = msx2_mouse_y;
-    int dx = -(x - mouseLastX), dy = y - mouseLastY;  // MSX は左・上が +
+    int dx = -(x - mouseLastX), dy = y - mouseLastY;
     if (dx > 127) dx = 127; else if (dx < -127) dx = -127;
     if (dy > 127) dy = 127; else if (dy < -127) dy = -127;
     mouseRelX = (int8_t)dx; mouseRelY = (int8_t)dy;
-    mouseLastX -= dx;                                 // 取り込んだ分だけ進める(残りは次へ)
+    mouseLastX -= dx;
     mouseLastY += dy;
   }
   mousePhase = (mousePhase + 1) & 3;
@@ -145,43 +114,35 @@ static uint8_t mouseRead(uint8_t joy) {
     case 2:  n = (uint8_t)(mouseRelY >> 4); break;
     default: n = (uint8_t)mouseRelY; break;
   }
-  if (!mouseStrobed || msx2LineClock() - mouseStrobeAt > MOUSE_IDLE_LINES) n = 0x0F;   // マウスとして読まれていない
+  if (!mouseStrobed || msx2LineClock() - mouseStrobeAt > MOUSE_IDLE_LINES) n = 0x0F;
   uint8_t b = msx2_mouse_buttons;
   return (uint8_t)((joy & 0xC0) | ((b & 1) ? 0 : 0x10) | ((b & 2) ? 0 : 0x20) | (n & 0x0F));
 }
 
 static void updateMemoryMap();
 
-// ---------------------------------------------------------------------------
-//  処理時間の内訳 (msx2_config.h の MSX2_PROFILE。集計と出力は末尾の msx2ProfReport)
-// ---------------------------------------------------------------------------
 #if MSX2_PROFILE
-enum { PN_BANK, PN_MAP, PN_IRQ, PN_HALT, PN_COUNT };   // このファイルで数える回数
-static uint32_t profN[PN_COUNT];                       // 今のフレームのぶん
-static uint32_t profMapCyc, profVioCyc;                // updateMemoryMap / VDPポート(98h〜9Bh)の時間
+enum { PN_BANK, PN_MAP, PN_IRQ, PN_HALT, PN_COUNT };
+static uint32_t profN[PN_COUNT];
+static uint32_t profMapCyc, profVioCyc;
 #define PROF_COUNT(i) (profN[i]++)
 #else
 #define PROF_COUNT(i) ((void)0)
 #endif
 
-// ---------------------------------------------------------------------------
-//  RTC (RP5C01)
-//    ブロック0: 時刻(BCDの各桁) / 1: アラーム・12/24・うるう年 / 2,3: バックアップRAM
-// ---------------------------------------------------------------------------
 static uint8_t rtcAddr, rtcMode, rtcRegs[4][13];
 static int     rtcFrames;
 static const uint8_t kRtcMask0[13] = { 15, 7, 15, 7, 15, 3, 7, 15, 3, 15, 1, 15, 15 };
 
 static void rtcInit() {
   memset(rtcRegs, 0, sizeof(rtcRegs));
-  // 2026年1月1日(木) 0:00:00。MSXの年は1980年起点。
   uint8_t *t = rtcRegs[0];
-  t[7] = 1;                 // 日
-  t[9] = 1;                 // 月
+  t[7] = 1;
+  t[9] = 1;
   t[11] = 46 % 10; t[12] = 46 / 10;
-  t[6] = 4;                 // 曜日
-  rtcRegs[1][10] = 1;       // 24時間制
-  rtcMode = 0x08;           // タイマー動作
+  t[6] = 4;
+  rtcRegs[1][10] = 1;
+  rtcMode = 0x08;
 }
 
 static void rtcTickSecond() {
@@ -224,13 +185,10 @@ static void rtcWrite(uint8_t v) {
   int a = rtcAddr & 15;
   v &= 15;
   if (a == 13) { rtcMode = v; return; }
-  if (a >= 13) return;                               // テスト/リセットは無視
+  if (a >= 13) return;
   rtcRegs[rtcMode & 3][a] = v;
 }
 
-// ---------------------------------------------------------------------------
-//  ROM / RAM 登録
-// ---------------------------------------------------------------------------
 static void setRom(int prim, int sub, int firstPage, uint8_t *rom, uint32_t size) {
   for (uint32_t off = 0; off + 0x2000 <= size && firstPage + (int)(off >> 13) < 8; off += 0x2000) {
     pageRd[prim][sub][firstPage + (off >> 13)] = rom + off;
@@ -263,7 +221,7 @@ void msx2SetCartridge(int s, uint8_t *rom, uint32_t size, Msx2Mapper mapper) {
   memset(&c, 0, sizeof(c));
   c.rom = rom;
   c.mapper = mapper;
-  uint32_t banks = size >> 13;                       // size は 2のべき乗に切り上げてあること
+  uint32_t banks = size >> 13;
   c.mask8k = banks ? banks - 1 : 0;
   switch (mapper) {
     case MSX2_MAP_ASCII8:  c.bank[0] = c.bank[1] = c.bank[2] = c.bank[3] = 0; break;
@@ -274,9 +232,6 @@ void msx2SetCartridge(int s, uint8_t *rom, uint32_t size, Msx2Mapper mapper) {
   cartUpdatePages(s);
 }
 
-// ---------------------------------------------------------------------------
-//  メモリマップ
-// ---------------------------------------------------------------------------
 static void mapperUpdatePages() {
   for (int i = 0; i < 4; i++) {
     uint8_t *seg = ramSeg[mapReg[i] & (MSX2_MAPPER_SEGMENTS - 1)];
@@ -301,16 +256,11 @@ static void updateMemoryMap() {
     op_map[p] = msx2_rd_map[p] = rd ? rd : emptyPage;
     msx2_wr_map[p] = pageWr[prim][sub][p];
   }
-  // FFFFh(拡張スロットレジスタ)を読むため、ページ3が拡張スロットなら E000h-FFFFh の
-  // データ読み出しを readSpecial() へ回す。命令の読み込みは op_map なので遅くならない。
   if (expanded[psr >> 6]) msx2_rd_map[7] = nullptr;
-  // ソニー型FDC(7FF8h-7FFFh)
   diskVisible = diskRom && ((psr >> 2) & 3) == 3 && ((ssr[3] >> 2) & 3) == 2;
   if (diskVisible) msx2_rd_map[3] = nullptr;
-  // FM-PAC の 7FF6h/7FF7h は読むとレジスタ値
   fmpacVisible = fmpac.rom && ((psr >> 2) & 3) == 2;
   if (fmpacVisible) msx2_rd_map[3] = nullptr;
-  // SCC の波形メモリ(8000h〜9FFFh のデータ読み出しだけ readSpecial へ。命令の読み込みは op_map)
   int p2 = (psr >> 4) & 3;
   sccReadable = (p2 == 1 || p2 == 2) && cart[p2].sccActive;
   if (sccReadable) msx2_rd_map[4] = nullptr;
@@ -328,7 +278,7 @@ static uint8_t MSX2_FAST readSpecial(uint16_t a) {
   if (fmpacVisible && (a == 0x7FF6 || a == 0x7FF7)) return (a == 0x7FF6) ? fmpac.enable : fmpac.bank;
   if (sccReadable && a >= 0x9800 && a <= 0x9FFF) {
     Cart &c = cart[(psr >> 4) & 3];
-    if (c.mapper != MSX2_MAP_KONAMI || a <= 0x98FF) {     // (K) は 9800h〜98FFh だけ、(KS)/SCC は 256 バイトごとのミラー
+    if (c.mapper != MSX2_MAP_KONAMI || a <= 0x98FF) {
       uint8_t r = a & 0xFF;
       return r < 0x80 ? sccWave[r >> 5][r & 0x1F] : 0xFF;
     }
@@ -336,7 +286,6 @@ static uint8_t MSX2_FAST readSpecial(uint16_t a) {
   return op_map[a >> 13][a & 0x1FFF];
 }
 
-// SCC への書き込み: 波形を覚えてからフロントエンドへ(a は 9800h〜98FFh)
 static void sccWrite(uint16_t a, uint8_t v) {
   uint8_t r = a & 0xFF;
   if (r < 0x80) sccWave[r >> 5][r & 0x1F] = v;
@@ -354,23 +303,17 @@ static void cartWrite(int s, uint16_t a, uint8_t v) {
   if ((!c.rom && c.mapper != MSX2_MAP_SCC) || a < 0x4000 || a >= 0xC000) return;
   switch (c.mapper) {
     case MSX2_MAP_KONAMI:
-      // (K): SCCなし(6000h/8000h/A000h)とSCCあり(5000h/7000h/9000h/B000h)の両方で動くよう、
-      // ページ内のどこへの書き込みでもバンクを切り替える
       if (c.sccActive && a >= 0x9800 && a <= 0x98FF) { sccWrite(a, v); return; }
       if (a >= 0x9000 && a <= 0x97FF) c.sccActive = ((v & 0x3F) == 0x3F);
       c.bank[(a - 0x4000) >> 13] = v;
       break;
     case MSX2_MAP_KONAMI_SCC:
-      // (KS): 実機のコナミSCCどおり 5000h/7000h/9000h/B000h の各 2KB だけがバンク切替。
-      // SCC は 9800h-9FFFh(256バイト単位のミラー)。それ以外への書き込みは無視する
-      // (メタルギア2は 8000h などへ書くので、(K) だとバンクが変わって止まる)。
       if (a >= 0x9800 && a <= 0x9FFF) { if (c.sccActive) sccWrite(0x9800 | (a & 0xFF), v); return; }
       if ((a & 0x1800) != 0x1000) return;
       if (a >= 0x9000 && a <= 0x97FF) c.sccActive = ((v & 0x3F) == 0x3F);
       c.bank[(a - 0x4000) >> 13] = v;
       break;
     case MSX2_MAP_SCC:
-      // ROM の無い SCC カートリッジ: 9000h〜97FFh に 3Fh で 9800h〜9FFFh に SCC が出る
       if (a >= 0x9800 && a <= 0x9FFF) { if (c.sccActive) sccWrite(0x9800 | (a & 0xFF), v); return; }
       if (a >= 0x9000 && a <= 0x97FF) {
         bool on = ((v & 0x3F) == 0x3F);
@@ -411,7 +354,7 @@ static void fmpacCheckSram() {
   bool on = fmpac.sram && fmpac.r1ffe == 0x4D && fmpac.r1fff == 0x69;
   if (on == fmpac.sramOn) return;
   fmpac.sramOn = on;
-  if (on) { fmpac.sram[0x1FFE] = 0x4D; fmpac.sram[0x1FFF] = 0x69; }   // 読むと鍵の値が見える
+  if (on) { fmpac.sram[0x1FFE] = 0x4D; fmpac.sram[0x1FFF] = 0x69; }
   PROF_COUNT(PN_BANK);
   fmpacUpdatePages();
   updateMemoryMap();
@@ -478,21 +421,16 @@ static inline void writeByte(uint16_t a, uint8_t v) {
   writeSpecial(a, v);
 }
 
-// ---------------------------------------------------------------------------
-//  I/O
-// ---------------------------------------------------------------------------
 static uint8_t MSX2_FAST readIO(uint8_t p) {
   switch (p) {
     case 0x98: case 0x99: case 0x9A: case 0x9B: {
 #if MSX2_PROFILE
-      uint32_t t0 = msx2ProfClock();                 // VDPコマンドの時間(cmd)もこの中に入る
+      uint32_t t0 = msx2ProfClock();
       uint8_t v = vdpReadPort(p & 3);
       profVioCyc += msx2ProfClock() - t0;
 #else
       uint8_t v = vdpReadPort(p & 3);
 #endif
-      // S#0/S#1 を読んでフラグが消えたら INT もすぐ下がる。次のラインまで要求を残すと、
-      // 割込み処理の終わりの EI で、もう原因の無い割込みをもう一度受け付けてしまう(ソーサリアンの曲が速くなる)
       if (MSX2_UNLIKELY(msx2_cpu.IRequest == INT_IRQ) && !vdpIrq()) msx2_cpu.IRequest = INT_NONE;
       return v;
     }
@@ -507,7 +445,7 @@ static uint8_t MSX2_FAST readIO(uint8_t p) {
     case 0xA9: return msx2_key_matrix[ppiC & 15];
     case 0xAA: return ppiC;
     case 0xB5: return rtcRead();
-    case 0xD9: case 0xDB: {                          // 漢字ROM (D9h=第1水準, DBh=第2水準)
+    case 0xD9: case 0xDB: {
       int n = (p == 0xDB);
       uint32_t a = kanjiAddr[n] + (n ? 0x20000 : 0);
       uint8_t v = (kanjiFont && a < kanjiSize) ? kanjiFont[a] : 0xFF;
@@ -534,23 +472,23 @@ static void MSX2_FAST writeIO(uint8_t p, uint8_t v) {
 #else
       vdpWritePort(p & 3, v);
 #endif
-      if (MSX2_UNLIKELY(msx2_cpu.IRequest == INT_IRQ) && !vdpIrq()) msx2_cpu.IRequest = INT_NONE;   // IE0/IE1 を切ったとき
+      if (MSX2_UNLIKELY(msx2_cpu.IRequest == INT_IRQ) && !vdpIrq()) msx2_cpu.IRequest = INT_NONE;
       return;
     case 0xA0: psgAddr = v & 15; return;
     case 0xA1:
-      if (psgAddr == 15 && mousePort && ((psgReg[15] ^ v) & (mousePort == 1 ? 0x10 : 0x20))) mouseStrobe();   // マウスの 8 番ピン
+      if (psgAddr == 15 && mousePort && ((psgReg[15] ^ v) & (mousePort == 1 ? 0x10 : 0x20))) mouseStrobe();
       psgReg[psgAddr] = v;
       msx2PsgWrite(psgAddr, v);
       return;
     case 0xA8: psr = v; updateMemoryMap(); return;
     case 0xAA: ppiC = v; return;
-    case 0xAB:                                       // PPI ポートCのビット単位セット/リセット
+    case 0xAB:
       if (!(v & 0x80)) {
         uint8_t bit = 1 << ((v >> 1) & 7);
         ppiC = (v & 1) ? (ppiC | bit) : (ppiC & ~bit);
       }
       return;
-    case 0x7C: case 0x7D:                            // 内蔵MSX-MUSIC、または FM-PAC で 7FF6h bit0=1
+    case 0x7C: case 0x7D:
       if (fmEnabled || (fmpac.rom && (fmpac.enable & 1))) msx2FmWrite(p & 1, v);
       return;
     case 0xB4: rtcAddr = v & 15; return;
@@ -559,7 +497,7 @@ static void MSX2_FAST writeIO(uint8_t p, uint8_t v) {
     case 0xD9: kanjiAddr[0] = (kanjiAddr[0] & 0x007E0) | ((uint32_t)(v & 0x3F) << 11); return;
     case 0xDA: kanjiAddr[1] = (kanjiAddr[1] & 0x1F800) | ((v & 0x3F) << 5); return;
     case 0xDB: kanjiAddr[1] = (kanjiAddr[1] & 0x007E0) | ((uint32_t)(v & 0x3F) << 11); return;
-    case 0xF4:                                       // openMSX の ResetStatusRegister と同じ動作
+    case 0xF4:
       f4reg = f4Inverted ? (v | 0x7F) : ((f4reg & 0x20) | (v & 0xA0));
       return;
     case 0xFC: case 0xFD: case 0xFE: case 0xFF:
@@ -572,14 +510,9 @@ static void MSX2_FAST writeIO(uint8_t p, uint8_t v) {
   }
 }
 
-// ---------------------------------------------------------------------------
-//  Z80 接続
-// ---------------------------------------------------------------------------
 extern "C" {
 byte MSX2_FAST RdZ80(zword a)         { return readByte(a); }
 void MSX2_FAST WrZ80(zword a, byte v) { writeByte(a, v); }
-// Z80.c は普通のメモリを表から直接読み書きし、表が nullptr のところ(FDC・FM-PAC・カートリッジの
-// バンク切り替え・拡張スロットレジスタなど)と FFFFh への書き込みだけここを呼ぶ
 byte MSX2_FAST RdZ80Slow(zword a)         { return readSpecial(a); }
 void MSX2_FAST WrZ80Slow(zword a, byte v) { writeSpecial(a, v); }
 byte MSX2_FAST InZ80(zword port)      { return readIO((uint8_t)port); }
@@ -601,24 +534,20 @@ void msx2SetCpuCycles(int n) {
 int msx2GetCpuCycles() { return cpuCyclesPerLine; }
 
 #if MSX2_PROFILE
-// ---------------------------------------------------------------------------
-//  処理時間の内訳: フレームごとの値を msx2ProfReport まで積算する
-// ---------------------------------------------------------------------------
-// run=msx2RunFrame 全体。spr/out は vdp の内数、vio/map は z80 の内数、cmd は vio の内数
 enum { PT_RUN, PT_VDP, PT_SPR, PT_OUT, PT_Z80, PT_VIO, PT_CMD, PT_MAP, PT_COUNT };
 static struct {
   uint32_t frames;
   uint64_t sum[PT_COUNT];
   uint32_t max[PT_COUNT];
-  uint32_t worst[PT_COUNT];                            // run が最大だったフレームの内訳
+  uint32_t worst[PT_COUNT];
   uint64_t opCycles[16];
   uint32_t opCount[16];
   uint32_t n[PN_COUNT];
   uint32_t vramW, vramR, data, lines, sprLines, sprVis;
-  uint32_t modeLines[32];                              // 画面モードごとの描いたライン数
-  uint32_t hsLines, adjLines;                          // 横スクロール(R#26/27) / 画面位置調整(R#18) が効いたライン数
+  uint32_t modeLines[32];
+  uint32_t hsLines, adjLines;
   uint64_t dots;
-  uint32_t cmdMax;                                     // いちばん長かったコマンド1つ
+  uint32_t cmdMax;
   uint16_t cmdMaxNx, cmdMaxNy;
   uint8_t  cmdMaxCmd;
 } profW;
@@ -676,7 +605,6 @@ static void profAppend(char *buf, int size, int *pos, const char *fmt, ...) {
   if (r > 0) *pos = (*pos + r < size - 1) ? *pos + r : size - 1;
 }
 
-// 1フレームあたりの回数 n/frames を有効数字3桁くらいで(10未満は小数2桁、100未満は小数1桁)
 static const char *profRate(char *s, uint64_t n, uint64_t frames) {
   uint64_t c = n * 100 / frames;
   if (c < 1000)       snprintf(s, 24, "%u.%02u", (unsigned)(c / 100), (unsigned)(c % 100));
@@ -706,20 +634,17 @@ int msx2ProfReport(char *buf, int size, uint32_t clockPerUs) {
              avg[PT_OUT], mx[PT_OUT], avg[PT_Z80], mx[PT_Z80], avg[PT_VIO], mx[PT_VIO], avg[PT_CMD], mx[PT_CMD],
              avg[PT_MAP], mx[PT_MAP],
              worst[PT_VDP], worst[PT_SPR], worst[PT_Z80], worst[PT_VIO], worst[PT_CMD]);
-  if (profW.cmdMax)                                    // R#46 の値/LOP NX×NY 時間
+  if (profW.cmdMax)
     profAppend(buf, size, &pos, "%s/%X %ux%u %uus\n", opName[profW.cmdMaxCmd >> 4],
                (unsigned)(profW.cmdMaxCmd & 15), (unsigned)profW.cmdMaxNx, (unsigned)profW.cmdMaxNy,
                (unsigned)(profW.cmdMax / cpu));
   else
     profAppend(buf, size, &pos, "-\n");
   char a[24], b[24], c[24], d[24], e[24], g[24], h[24], k2[24], l[24];
-  // halt = Z80 が HALT のまま始まったライン数(262 から引くと動いていたライン数), ln = 表示オンで描いたライン数
-  // spl = スプライトを重ねたライン数, spv = 表示したスプライトの延べ数(1ライン1枚で1)
   profAppend(buf, size, &pos, "PROF n/frame: 98h wr %s rd %s int %s halt %s bank %s map %s ln %s spl %s spv %s | cmd n(us):",
              profRate(a, profW.vramW, f), profRate(b, profW.vramR, f), profRate(c, profW.n[PN_IRQ], f),
              profRate(g, profW.n[PN_HALT], f), profRate(d, profW.n[PN_BANK], f), profRate(e, profW.n[PN_MAP], f),
              profRate(l, profW.lines, f), profRate(h, profW.sprLines, f), profRate(k2, profW.sprVis, f));
-  // コマンドの区分 (CMD 上位4bit)。other = STOP/POINT/PSET/SRCH/LMCM
   static const char *const names[8] = { "HMMM", "LMMM", "HMMV", "LMMV", "YMMM", "LINE", "HMMC/LMMC", "other" };
   static const uint16_t ops[8] = { 1 << 0xD, 1 << 0x9, 1 << 0xC, 1 << 0x8, 1 << 0xE, 1 << 0x7,
                                    (1 << 0xF) | (1 << 0xB), 0x007F | (1 << 0xA) };
@@ -730,7 +655,6 @@ int msx2ProfReport(char *buf, int size, uint32_t clockPerUs) {
     profAppend(buf, size, &pos, " %s %s(%u)", names[k], profRate(a, n, f), (unsigned)(cyc / (f * cpu)));
   }
   profAppend(buf, size, &pos, " | dots %u data %s\n", (unsigned)(profW.dots / f), profRate(a, profW.data, f));
-  // 画面モードごとの1フレームあたりのライン数(ライン割込みで途中から切り替えるソフトの確認用)
   profAppend(buf, size, &pos, "PROF lines/frame by mode:");
   for (int m = 0; m < 32; m++) {
     if (!profW.modeLines[m]) continue;
@@ -751,15 +675,11 @@ int msx2ProfReport(char *buf, int size, uint32_t clockPerUs) {
 }
 #endif
 
-// ---------------------------------------------------------------------------
-//  リセット / 実行
-// ---------------------------------------------------------------------------
 void msx2Reset() {
   memset(emptyPage, 0xFF, sizeof(emptyPage));
   for (int i = 0; i < 16; i++) msx2_key_matrix[i] = 0xFF;
   psr = 0;
   memset(ssr, 0, sizeof(ssr));
-  // BIOSと同じ初期値(ページ0〜3にセグメント3,2,1,0)
   mapReg[0] = 3; mapReg[1] = 2; mapReg[2] = 1; mapReg[3] = 0;
   mapperUpdatePages();
   for (int s = 1; s <= 2; s++) { cart[s].sccActive = false; if (cart[s].rom) cartUpdatePages(s); }
@@ -782,7 +702,7 @@ void msx2Reset() {
   memset(&msx2_cpu, 0, sizeof(msx2_cpu));
   ResetZ80(&msx2_cpu);
   msx2_cpu.IPeriod = CPU_CYCLES_PER_LINE;
-  msx2_cpu.IAutoReset = 1;                           // 受け付けたら IRequest を下げる
+  msx2_cpu.IAutoReset = 1;
 #if MSX2_PROFILE
   profClear();
 #endif
@@ -793,7 +713,6 @@ uint32_t msx2LineClock() { return lineClock; }
 
 void MSX2_FAST msx2RunFrame() {
 #if MSX2_PROFILE
-  // 1ラインにつきカウンタを2回読む: vdp = vdpLine、z80 = 割込み判定 + ExecZ80 (I/O処理と VDPコマンドを含む)
   uint32_t tFrame = msx2ProfClock(), t0 = tFrame, vdpCycles = 0, z80Cycles = 0;
 #endif
   for (int line = 0; line < MSX2_LINES_PER_FRAME; line++) {
@@ -803,7 +722,6 @@ void MSX2_FAST msx2RunFrame() {
     uint32_t t1 = msx2ProfClock();
     vdpCycles += t1 - t0;
 #endif
-    // INT はレベル信号。VDPのフラグ(S#0/S#1を読むと消える)が立っている間は要求し続ける。
     if (vdpIrq()) {
       msx2_cpu.IRequest = INT_IRQ;
       if (msx2_cpu.IFF & IFF_1) {
@@ -814,8 +732,8 @@ void MSX2_FAST msx2RunFrame() {
       msx2_cpu.IRequest = INT_NONE;
     }
 #if MSX2_PROFILE
-    bool pending = (msx2_cpu.IRequest == INT_IRQ);  // DI 中の要求。EI のあと ExecZ80 の中で受け付けると下がる
-    if (msx2_cpu.IFF & IFF_HALT) PROF_COUNT(PN_HALT);   // このラインは HALT で待つだけ
+    bool pending = (msx2_cpu.IRequest == INT_IRQ);
+    if (msx2_cpu.IFF & IFF_HALT) PROF_COUNT(PN_HALT);
 #endif
     ExecZ80(&msx2_cpu, CPU_CYCLES_PER_LINE);
 #if MSX2_PROFILE
@@ -830,5 +748,10 @@ void MSX2_FAST msx2RunFrame() {
 #endif
 }
 
+uint8_t msx2Leds() {
+    static bool kanaManaged = false;
+    if (psgReg[15] & 0x80) kanaManaged = true;
+    return (!(ppiC & 0x40) ? 1 : 0) | ((kanaManaged && !(psgReg[15] & 0x80)) ? 2 : 0);
+}
 uint8_t msx2PrimarySlots() { return psr; }
 uint8_t msx2SubSlots(int prim) { return ssr[prim & 3]; }

@@ -24,7 +24,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 | `MSX/MSX.ino` | MSX1（TMS9918A） | 320×200 |
 | `MSX2/MSX2.ino` | MSX2+（ソニー HB-F1XDJ 相当、V9958。MSX2のBIOSならV9938として動作） | 512×212 |
 
-起動メニュー、ファイル選択は両方で共通です。ファンクションキーは F12・F8 が共通で、ディスクの入れ替えなどは MSX1 と MSX2+ で割り当てが違います（「5. 操作ガイド」の表を参照）。
+起動メニュー、ファイル選択は両方で共通です。F12・F8・F6 は両機種で使えます。ディスクの入れ替えなどは MSX1 と MSX2+ で割り当てが異なります（「5. 操作ガイド」の表を参照）。
 
 ## 構成プロジェクト
 
@@ -204,17 +204,17 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 | F11（一時停止中） | クイックロード（1〜5を選ぶ） | **ドライブ2（B:）**のディスク入れ替え |
 | Shift + F11（一時停止中） | クイックセーブ（1〜5を選ぶ） | **ドライブ2（B:）**のディスクをSDへ書き戻し |
 | F8 | PSGをSCCの波形で鳴らす ON / OFF | 同じ |
-| Shift + F8 | スプライトの横の制限（4個）を外す | なし |
-| F6 | なし | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） |
+| Shift + F8 | スプライトの横の制限（4枚）を外す | スプライトの横の制限（8枚）を外す |
+| F6 | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） | 同じ |
 
 - **MSX1 と MSX2+ の違い（注意）**
    - ディスクの入れ替えは、MSX1 が **F9**（ドライブ1のみ）、MSX2+ が **F10（ドライブ1）・F11（ドライブ2）** です。
    - F10・F11 は、MSX1 ではステートセーブ、MSX2+ ではディスクの入れ替えです（MSX2+ にステートセーブはありません）。
-   - Shift + F8（スプライト制限の解除）は MSX1 のみ、F6（Z80の速さ）は MSX2+ のみです。
+   - F6のZ80速度変更とShift + F8のスプライト制限解除は両機種で使えます。
 - ※ディスクの書き戻しにライトプロテクト機能はありません。オリジナルデータは別途保管してください。
 - ※SCC対応ソフトの実行中は F8 を使わないでください。
-- ※Shift + F8 を ON にすると衝突検出・5枚目検出が止まります。不具合が出る場合は OFF にしてください。
-- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 205 = 実機相当、High 270、Super 335）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
+- ※Shift + F8 を ON にすると衝突検出とスプライト数超過の検出（MSX1は5枚目、MSX2+は9枚目）が止まります。不具合が出る場合は OFF にしてください。
+- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 228 = 実機相当、High 300、Super 372）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
 
 ### ステートセーブ＆ロード（MSX1）
 
@@ -298,7 +298,7 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 
 ### エミュレータ特殊操作
 
-F6・F8〜F12 はエミュレータの操作に使います（機種で割り当てが違います。「5. 操作ガイド」の表を参照）。
+F6・F8〜F12 はエミュレータの操作に使います。F6 は両機種共通の Z80 速度変更、F8〜F12 の割り当ては機種によって異なります（「5. 操作ガイド」の表を参照）。
 
 ## 8. 開発者向け：キーボード・ローカライズ設計資料
 
@@ -352,7 +352,7 @@ MSX emulators for ESP32 using the FabGL library (Work in Progress). There are tw
 | `MSX/MSX.ino` | MSX1 (TMS9918A) | 320×200 |
 | `MSX2/MSX2.ino` | MSX2+ (modelled on Sony HB-F1XDJ, V9958; runs as V9938 with an MSX2 BIOS) | 512×212 |
 
-The boot menu and the file selector are shared by both. F12 and F8 are common; disk swapping and other keys differ between MSX1 and MSX2+ (see the table in "5. Function Keys").
+The boot menu and the file selector are shared by both. F12, F8, and F6 work on both machines. Disk swapping and other keys differ between MSX1 and MSX2+ (see the table in "5. Function Keys").
 
 ## Included Projects
 
@@ -531,17 +531,17 @@ The boot menu and the file selector can also be operated with the port 1 control
 | F11 (paused) | Quick load (select 1-5) | Swap the disk in **drive 2 (B:)** |
 | Shift + F11 (paused) | Quick save (select 1-5) | Write **drive 2 (B:)** back to the SD card |
 | F8 | PSG played with SCC waveforms ON / OFF | same |
-| Shift + F8 | Remove the horizontal sprite limit (4 per line) | - |
-| F6 | - | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) |
+| Shift + F8 | Remove the horizontal sprite limit (4 per line) | Remove the horizontal sprite limit (8 per line) |
+| F6 | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) | same |
 
 - **Differences between MSX1 and MSX2+ (note)**
    - Disk swapping is **F9** (drive 1 only) on MSX1, and **F10 (drive 1) / F11 (drive 2)** on MSX2+.
    - F10 / F11 are state save keys on MSX1 and disk swap keys on MSX2+ (MSX2+ has no state save).
-   - Shift + F8 (sprite limit removal) is MSX1 only; F6 (Z80 speed) is MSX2+ only.
+   - F6 speed selection and Shift + F8 sprite limit removal are available on both machines.
 - There is no write-protect for disk write-back. Please keep backups of your original data.
 - Do not use F8 with software that already supports SCC.
-- Shift + F8 disables collision and 5th-sprite detection. Turn it off if it causes glitches.
-- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 205 (real speed), High 270, Super 335. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
+- Shift + F8 disables collision and excess-sprite detection (the 5th sprite on MSX1, the 9th on MSX2+). Turn it off if it causes glitches.
+- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 228 (real speed), High 300, Super 372. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
 
 ### State Save & Load (MSX1)
 
@@ -623,7 +623,7 @@ With `KEYBORD_MAP` set to US_ENGLISH / PORTUGUESE (Brazilian ABNT2) / SPANISH / 
 
 ### Emulator Special Commands
 
-F6 and F8-F12 control the emulator (assignments differ between machines; see the table in "5. Function Keys").
+F6 and F8-F12 control the emulator. F6 changes Z80 speed on both machines; F8-F12 assignments differ (see the table in "5. Function Keys").
 
 ## 8. For Developers: Keyboard Localization Design
 

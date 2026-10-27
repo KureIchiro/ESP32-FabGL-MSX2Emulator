@@ -509,9 +509,12 @@ static int devTest() {
   expect("FM-PAC SRAM writes counted (same value not)", (int)(msx2FmPacSramWrites() - w0), 2);
   msx2SetFmPac(nullptr, 0, nullptr);
   // ---- CPU の速さ ----
-  msx2SetCpuCycles(270);
-  expect("cpu cycles 270", msx2GetCpuCycles(), 270);
-  msx2SetCpuCycles(205);
+  msx2SetCpuCycles(300);
+  expect("cpu cycles 300", msx2GetCpuCycles(), 300);
+  msx2SetCpuCycles(372);
+  expect("cpu cycles 372", msx2GetCpuCycles(), 372);
+  msx2SetCpuCycles(228);
+  expect("cpu cycles 228", msx2GetCpuCycles(), 228);
   printf("DEV TEST %s (%d failures)\n", fails ? "NG" : "OK", fails);
   return fails ? 1 : 0;
 }
@@ -741,7 +744,7 @@ static int boot(const std::string &dir, int frames, const std::string &out, int 
   if (!getenv("CART"))
     if (uint8_t *p = loadAny(dir, { "DISK.ROM" }, &n)) msx2SetDiskRom(p);
   msx2Reset();
-  if (const char *cc = getenv("CPUCYCLES")) msx2SetCpuCycles(atoi(cc));   // CPUCYCLES=205|270|335 (MSX2.ino の F6)
+  if (const char *cc = getenv("CPUCYCLES")) msx2SetCpuCycles(atoi(cc));   // CPUCYCLES=228|300|372 (MSX2.ino の F6)
   msx2_cpu.Trace = 1;
 #if MSX2_PROFILE
   // MSX2.ino と同じく300フレームごとに内訳を出す(PCの時間は参考。回数は ESP32 と同じになる)

@@ -53,7 +53,7 @@
  *   (K) コナミ(SCCあり/なし両用)  (KS) コナミSCC(実機どおりのアドレスのみ。メタルギア2など)
  *  実行中: F12 一時停止 / Shift+F12 リセット / 一時停止中に F10・F11 でドライブ1・2のディスク
  *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす / Shift+F8 スプライトの横の枚数制限なし・あり /
- *   F6 Z80 の速さ Normal(205) → High(285) → Super(365)(1ラインのクロック数。画面下に0.5秒表示)
+ *   F6 Z80 の速さ Normal(228) → High(300) → Super(372)(1ラインのクロック数。画面下に0.5秒表示)
  *   ※ドライブ2は起動メニューで DiskB を選んで起動したときだけつながる(実機の HB-F1XDJ と
  *     同じく、選ばなければ1ドライブで、B: は A: を使う仮想ドライブになる)
  */
@@ -75,7 +75,6 @@
 #include "KeyboardSystem.hpp"
 #include "JoyKeys.hpp"
 
-// SD カードの中の MSX2 のフォルダ(BIOS・/ROM・/DISK・設定ファイルはすべてこの下。MSX1 は /MSX1、マーク3 は /SMS)
 #define SD_ROOT "/MSX2"
 
 #if __has_include("emu2413.h")
@@ -83,82 +82,40 @@
   #define MSX2_HAS_FM 1
 #endif
 
-//Please select one of the following options.
 #define KEYBORD_MAP (KeyboardLayout::JAPANESE)
-//#define KEYBORD_MAP (KeyboardLayout::US_ENGLISH)
-//#define KEYBORD_MAP (KeyboardLayout::PORTUGUESE)
-//#define KEYBORD_MAP (KeyboardLayout::SPANISH)
-//#define KEYBORD_MAP (KeyboardLayout::ITALIAN)
 
-// 5秒ごとに1フレームの処理時間をシリアルに出す(開発中の確認用)
-// msx2_config.h の MSX2_PROFILE が 1 なら、続けてその内訳(PROF 2行)も出す。
-// これを消すときは MSX2_PROFILE も 0 にする(数えるだけで出さないことになるため)。
-//#define MSX2_PERF_LOG
-
-// TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
 #define SD_MOSI 12
 #define SD_CS 13
 
-// 画面: 液晶モニタはアナログ信号を、自分が思っている解像度(同期の周波数から決める)の
-// 画素数で1ラインを標本化する。こちらの1ドットがその整数個に当たらないと、ドットによって
-// 拾われる回数が変わり、細い縦線が所々太る(512ドットの画面で目立つ)。
-//
-// ■ MSX2_FULLHD 1 (推奨・16:9モニタ): 1920x1080@60Hz (CEA: 148.5MHz 2200x1125, 67.5kHz,
-//   +H +V) と同じ同期で出す。モニタはパネルと同じ 1920x1080 として受けるので拡大縮小もなく、
-//   「引き延ばす/しない」の設定にも左右されない。
-//     横: ドットクロック 49.41MHz = 1ドットをモニタの3画素で拾う → 512ドット = 1536画素(80%)
-//         合計 732ドット(2200/3=733.3 に一番近い4の倍数)。誤差0.18%は画面全体で約1ドットのずれ。
-//         表示512 / フロント92 / 同期16 / バック112 (4の倍数) で左右中央
-//     縦: 1ラインを5回くり返す → 212×5 = 1060ライン(98%)。合計 225×5 = 1125
-//         表示212 / フロント3 / 同期1 / バック9 (5ライン単位) で上下中央
-//     画面の形: 1536×1060 = 1.45:1 (実機のTVでは約1.38:1。4:3は1.33:1)
-//   モニタが VGA 入力で 1920x1080 を受け付けないときは 0 にする。
-//
-// ■ MSX2_FULLHD 0: 標準VGA 640x480@60Hz と同じ同期(31.47kHz / 60Hz)。どのモニタでも映る。
-//   モニタは1ラインを640回で拾うので、512ドットをくっきり出すには1ドット=1画素(25.175MHz)
-//   しかなく、それだと横が80%で細長くなる。形を優先してドットクロックを変えているため、
-//   512ドットの画面では縦線が所々太る。
-//   垂直(DoubleScan単位): 表示212 / フロント5+14 / 同期1 / バック16+14 = 262 → 縦の占有率 0.883
-//     MSX2_WIDE_MONITOR 1: 16:9 モニタで 640x480 を全画面に引き伸ばす(設定できないモニタ用)
-//       30.46MHz: 表示512 / フロント152 / 同期116 / バック188 = 968 (横の占有率0.661 → 4:3)
-//     MSX2_WIDE_MONITOR 0: 4:3 モニタ(または比率保持表示)
-//       22.78MHz: 表示512 / フロント48 / 同期88 / バック76 = 724 (横の占有率0.883 → 4:3)
-#define MSX2_FULLHD 0                 // 1: 1920x1080 の同期で出す(16:9 モニタ推奨。2026-10-07 実機で映らず)  0: 640x480 の同期
-#define MSX2_WIDE_MONITOR 0           // MSX2_FULLHD 0 のとき  1: 16:9 モニタ(全画面引き伸ばし)  0: 4:3 モニタ
+#define MSX2_FULLHD 0
+#define MSX2_WIDE_MONITOR 0
 #if MSX2_WIDE_MONITOR
   #define MSX2_MODELINE_VGA "\"512x212@60Hz\" 30.46 512 664 780 968 212 231 232 262 -HSync -VSync DoubleScan"
 #else
   #define MSX2_MODELINE_VGA "\"512x212@60Hz\" 22.78 512 560 648 724 212 231 232 262 -HSync -VSync DoubleScan"
 #endif
-// 1920x1080 用。縦の5回くり返しは書式に無いので、読み込んだあと scanCount を 5 にする。
 #define MSX2_MODELINE_FHD "\"512x212@60Hz\" 49.41 512 604 620 732 212 215 216 225 +HSync +VSync"
 #define MSX2_FHD_SCAN 5
 
-// VDP: 0 = BIOS に合わせる(MSX2P.ROM なら V9958、MSX2.ROM なら V9938)  1 = V9938 固定  2 = V9958 固定
-// BIOS は SD の /MSX2 の MSX2P.ROM + MSX2PEXT.ROM (MSX2+) を探し、無ければ MSX2.ROM + MSX2EXT.ROM (MSX2)、
-// それも無ければ C-BIOS(MSX2+)。V9938 にすると、VDP の種類を見てMSX2+用の処理に切り替える
-// ソフト(スペースマンボウなど)も MSX2 用の処理(R#18 での横スクロールなど)で動く。
 #define MSX2_VDP 0
 
-// 内部RAMはこの量を空けておく(SDライブラリやタスクのスタック用)
 #define INTERNAL_RESERVE (40 * 1024)
 
-// 起動メニューで選んだ内容
-static const char *ITEM_NONE  = "<NONE>";          // ファイル選択の「なし」
-static const char *ITEM_FMPAC = "<FM-PAC>";        // スロット2に FM-PAC を挿す
-static const char *ITEM_SCC   = "<SCC>";           // ROM の無い SCC カートリッジ(SD スナッチャーの音源の代わり)
+static const char *ITEM_NONE  = "<NONE>";
+static const char *ITEM_FMPAC = "<FM-PAC>";
+static const char *ITEM_SCC   = "<SCC>";
 struct BootConfig {
-  String slot[2];                                  // "" = 空き。ITEM_SCC、slot[1] は ITEM_FMPAC もあり
-  String disk[2];                                  // "" = 入れない
+  String slot[2];
+  String disk[2];
   bool diskBios;
-  bool diskBiosManual;                             // 手で切り替えたら、以後は自動で決めない
-  int  mouse;                                      // 0 = なし、1 / 2 = ジョイスティックポート1 / 2 に PS/2 マウス
+  bool diskBiosManual;
+  int  mouse;
 };
-static uint8_t *fmpacSram;                         // FM-PAC の SRAM(SD の /FMPAC.PAC に保存する)
-static bool mouseOn = false;                       // PS/2 マウスを読む
-static int mousePortSel = 0;                       // マウスをつないだポート(0 = なし)。そのポートのコントローラはキーを押す(JoyKeys.hpp)
+static uint8_t *fmpacSram;
+static bool mouseOn = false;
+static int mousePortSel = 0;
 
 fabgl::VGAController DisplayController;
 fabgl::SoundGenerator soundGenerator;
@@ -171,7 +128,6 @@ static void printHeap(const char *tag) {
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
-// 内部RAMに余裕があれば内部、なければPSRAM
 static uint8_t *allocFast(size_t n, bool *internal = nullptr) {
   uint8_t *p = nullptr;
   if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) >= n + INTERNAL_RESERVE)
@@ -181,16 +137,11 @@ static uint8_t *allocFast(size_t n, bool *internal = nullptr) {
   return p;
 }
 
-// ---------------------------------------------------------------------------
-//  画面 / UI (ビューポートへ直接描く。4バイト内は px2,px3,px0,px1 なので x^2)
-// ---------------------------------------------------------------------------
-static uint8_t *vpRow[MSX2_SCREEN_H];      // ビューポートの各行
-static uint8_t *vdpRows[MSX2_SCREEN_H];    // VDPが書く先(ステータス表示中はその行を退避先へ)
-static uint8_t *scratchRow;                // ステータス表示中にVDPが書く捨て行
+static uint8_t *vpRow[MSX2_SCREEN_H];
+static uint8_t *vdpRows[MSX2_SCREEN_H];
+static uint8_t *scratchRow;
 static bool vpReady = false;
 
-// 生の画素値の上2ビットは同期信号。負極性(640x480)なら C0h、正極性(1920x1080)なら 00h が
-// 「同期なし」なので、画面モードを決めたあと uiSetSync() で合わせる。
 static uint8_t UI_BLACK = 0xC0;
 static uint8_t UI_WHITE = 0xFF;
 static uint8_t UI_BLUE  = 0xF0;
@@ -239,53 +190,45 @@ static void uiText(int x, int y, const char *s, uint8_t fg, uint8_t bg) {
 }
 
 static void clearStatus() {
-  for (int r = STATUS_Y; r < STATUS_Y + 8; r++) vdpRows[r] = vpRow[r];   // VDPに返す
+  for (int r = STATUS_Y; r < STATUS_Y + 8; r++) vdpRows[r] = vpRow[r];
 }
 
-static uint32_t statusClearAt;                     // timedStatus を消す時刻(millis。0 = なし)
+static uint32_t statusClearAt;
 
 void flashStatus(const char *msg, int waitMs = 0) {
   if (!vpReady) return;
   statusClearAt = 0;
-  for (int r = STATUS_Y; r < STATUS_Y + 8; r++) vdpRows[r] = scratchRow; // VDPに上書きさせない
+  for (int r = STATUS_Y; r < STATUS_Y + 8; r++) vdpRows[r] = scratchRow;
   uiFillRect(0, STATUS_Y, MSX2_SCREEN_W - 1, STATUS_Y + 7, UI_BLACK);
   uiText(8, STATUS_Y, msg, UI_WHITE, UI_BLACK);
   if (waitMs > 0) { delay(waitMs); clearStatus(); }
 }
 
-// 画面の下に ms ミリ秒だけ出す(待たない。loop() で消す)
 static void timedStatus(const char *msg, int ms) {
   flashStatus(msg);
   statusClearAt = millis() + ms;
   if (!statusClearAt) statusClearAt = 1;
 }
 
-// ---------------------------------------------------------------------------
-//  音: PSG / SCC (MSX1版と同じ) / FM
-// ---------------------------------------------------------------------------
-static const int BUFFER_SIZE = 256;       // 256 / 16384Hz = 約15.6ms (60FPSの約1フレーム)
+static const int BUFFER_SIZE = 256;
 
 int8_t scc_waveform[5][32] = { 0 };
-uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };  // PSGの各chを2つのSCC chに割り当てるため6ch
+uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_enable;
 bool psg2scc = false;
 const uint8_t SCC_VOL_TABLE[16] = { 0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75 };
 
-// PSGあり:オープニングのメインリード用: 偶数倍音のみのノコギリ状(PSG矩形波と合成するとノコギリ波に近づく)
 uint8_t SCC_Ys2_Lead[32] = {
   0x00, 0x13, 0x26, 0x39, 0x4A, 0x60, 0x76, 0x5D, 0x00, 0xA3, 0x8A, 0xA0, 0xB6, 0xC7, 0xDA, 0xED,
   0x00, 0x13, 0x26, 0x39, 0x4A, 0x60, 0x76, 0x5D, 0x00, 0xA3, 0x8A, 0xA0, 0xB6, 0xC7, 0xDA, 0xED
 };
 
-// PSGあり:ベース・低音パート用: ほぼ2fの正弦波+4fを少しだけ(PSGの低音に芯と輪郭を足す)
 uint8_t SCC_Ys2_Bass[32] = {
   0x00, 0x1A, 0x34, 0x50, 0x69, 0x76, 0x6A, 0x40, 0x00, 0xC0, 0x96, 0x8A, 0x97, 0xB0, 0xCC, 0xE6,
   0x00, 0x1A, 0x34, 0x50, 0x69, 0x76, 0x6A, 0x40, 0x00, 0xC0, 0x96, 0x8A, 0x97, 0xB0, 0xCC, 0xE6
 };
 
-// バッキング(和音・アルペジオ): デューティ25%のパルス波。4倍音が無く、PSGの矩形波より少し太い
-// 倍音比 1 : 0.69 : 0.31 : 0 : 0.16 : 0.17 ...
 uint8_t SCC_Ys2_Back[32] = {
   0x29, 0x6D, 0x7C, 0x79, 0x7B, 0x79, 0x7C, 0x6D, 0x29, 0xE5, 0xD5, 0xD8, 0xD7, 0xD8, 0xD7, 0xD7,
   0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD7, 0xD8, 0xD7, 0xD8, 0xD5, 0xE5
@@ -419,7 +362,6 @@ private:
     int volA = volTable[(r8 & 0x10) ? envVol : (r8 & 0x0F)];
     int volB = volTable[(r9 & 0x10) ? envVol : (r9 & 0x0F)];
     int volC = volTable[(r10 & 0x10) ? envVol : (r10 & 0x0F)];
-    // ノイズだけのchは控えめにする
     if ((r7 & 0x09) == 0x01) volA >>= 1;
     if ((r7 & 0x12) == 0x02) volB >>= 1;
     if ((r7 & 0x24) == 0x04) volC >>= 1;
@@ -456,19 +398,13 @@ private:
 AY38910Generator psgGen;
 
 #ifdef MSX2_HAS_FM
-// MSX-MUSIC (YM2413)。Mark III版と同じく、FMに一度も書き込まれていない間は合成しない
-// (合成は1サンプル約12us、16384Hzでコア1の約20%を使う)。
 class YM2413Generator : public fabgl::WaveformGenerator {
 private:
   OPLL *opll = nullptr;
   int16_t sampleBuffer[BUFFER_SIZE];
   volatile int head = 0, tail = 0;
   int lastSample = 0;
-  static const int LP_SHIFT = 2;           // 1次IIRローパス
-  // FabGL のミキサーは各chの和に (PSG100+FM100 なら) 約0.32倍を掛けて、そのまま
-  // 8bit で DAC に出す(上限で止めないので ±127 を超えると折り返して爆音のノイズになる)。
-  // emu2413 は 1ch 最大 ±4094、全ch+リズムで ±25000 程度。>>6 で FM 1ch と PSG 1ch が
-  // ほぼ同じ音量になり、±250 で止めれば PSG 最大と重なっても ±110 に収まる。
+  static const int LP_SHIFT = 2;
   static const int FM_SHIFT = 6;
   static const int FM_CLIP  = 250;
   int32_t lpState = 0;
@@ -480,12 +416,12 @@ private:
 public:
   volatile bool touched = false;
   YM2413Generator() { opll = OPLL_new(3579545, 16384); }
-  void writePort(uint8_t isData, uint8_t val) {   // コア0(Z80)から呼ばれる
+  void writePort(uint8_t isData, uint8_t val) {
     touched = true;
     int n = (cmdHead + 1) % CMD_QUEUE_SIZE;
     if (n != cmdTail) { cmdQueue[cmdHead] = { isData, val }; cmdHead = n; }
   }
-  void fillBuffer() {                              // コア1から呼ばれる
+  void fillBuffer() {
     if (!opll || !touched) return;
     while (cmdTail != cmdHead) {
       FMCommand c = cmdQueue[cmdTail];
@@ -495,7 +431,7 @@ public:
     int nextHead = (head + 1) % BUFFER_SIZE;
     while (nextHead != tail) {
       int32_t raw = OPLL_calc(opll);
-      lpState += (raw - lpState) >> LP_SHIFT;     // シフト前にかけて小音量の量子化ノイズを避ける
+      lpState += (raw - lpState) >> LP_SHIFT;
       int32_t s = lpState >> FM_SHIFT;
       if (s > FM_CLIP) s = FM_CLIP; else if (s < -FM_CLIP) s = -FM_CLIP;
       sampleBuffer[head] = (int16_t)s;
@@ -514,11 +450,10 @@ public:
 YM2413Generator *fmGen = nullptr;
 #endif
 
-// ---- コアからのフック ----
 void msx2PsgWrite(int reg, uint8_t v) {
   psgGen.writeReg(reg, v);
   if (!psg2scc) return;
-  switch (reg) {                                  // PSG の音をSCCの波形で鳴らす(F8)
+  switch (reg) {
     case 0: case 1: case 2: case 3: case 4: case 5: {
       int ch = reg / 2;
       if (reg % 2 == 0) scc_f[ch] = (scc_f[ch] & 0x0F00) | v;
@@ -559,9 +494,6 @@ void msx2FmWrite(int port, uint8_t v) {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-//  ROM / ディスク
-// ---------------------------------------------------------------------------
 static uint8_t *loadFile(const char *path, uint32_t *size, bool fast) {
   File f = SD.open(path);
   if (!f) return nullptr;
@@ -616,11 +548,6 @@ static void clearKeyBuffer() {
   while (kb->scancodeAvailable() > 0) { kb->getNextScancode(0); delay(10); }
 }
 
-// dirPath(/ROM や /DISK)の中からファイルを選ぶ。サブフォルダにも入れる。
-//   フォルダは「名前/」で一覧の上のほうに出る。Enter で入り、「../」か BackSpace で1つ上へ戻る。
-//   返す値は dirPath からの相対パス(例 "Ys2/YsII_Game Disk.dsk")。
-// extra: 一番上のフォルダの一覧の先頭に足す固定の項目(起動メニューの「なし」「FM-PAC」など)。選ぶとその文字列を返す。
-// current: 最初にカーソルを置く項目(相対パス。フォルダ付きならそのフォルダから始める)。ESC で抜けたときは "" を返す。
 static String showFileSelector(const char *title, const char *dirPath, const char *ext,
                                const std::vector<String> &extra = {}, const String &current = "") {
   enum { K_EXTRA, K_UP, K_DIR, K_FILE };
@@ -630,23 +557,23 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
   String lext = String(ext);
   lext.toLowerCase();
 
-  String sub = "", want = current;                 // sub: 今のフォルダ(dirPath からの相対。先頭・末尾の / なし)
+  String sub = "", want = current;
   bool isExtra = false;
   for (const String &e : extra) if (e == current) isExtra = true;
   int slash = current.lastIndexOf('/');
   if (!isExtra && slash >= 0) { sub = current.substring(0, slash); want = current.substring(slash + 1); }
 
-  for (;;) {                                       // フォルダを移るたびに一覧を作り直す
+  for (;;) {
     String path = String(dirPath) + (sub == "" ? "" : "/" + sub);
     File dir = SD.open(path.c_str());
-    if (!dir && sub != "") { sub = ""; want = ""; continue; }   // 前に選んだフォルダが無くなっていた
+    if (!dir && sub != "") { sub = ""; want = ""; continue; }
     if (!dir) { SD.mkdir(SD_ROOT); SD.mkdir(dirPath); dir = SD.open(dirPath); }
     std::vector<Item> dirs, files;
     while (dir) {
       File file = dir.openNextFile();
       if (!file) break;
       String name = file.name();
-      int s = name.lastIndexOf('/');                // 版によってはフルパスが返る
+      int s = name.lastIndexOf('/');
       if (s >= 0) name = name.substring(s + 1);
       if (name.length() && name[0] != '.' && name != "System Volume Information") {
         if (file.isDirectory()) dirs.push_back({ name, K_DIR });
@@ -673,8 +600,6 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
     for (int i = 0; i < (int)items.size(); i++)
       if (items[i].name == want) { cursor = i; break; }
     bool isBreak = false, redraw = true, changeDir = false;
-    // 画面全体を塗るのはフォルダに入ったときだけ。カーソルを動かしたら前と今の2行、
-    // スクロールしたら一覧の行だけ描き直す(画面の行に直接書くので、全部塗り直すとちらつく)
     int shownTop = -1, shownCursor = -1;
     auto drawItem = [&](int idx) {
       int y = 30 + (idx - top) * 9;
@@ -683,7 +608,7 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
       const Item &it = items[idx];
       String label = (it.kind == K_UP || it.kind == K_DIR) ? it.name + "/" : it.name;
       if (label.length() > 54) label = label.substring(0, 54);
-      uiText(64, y, label.c_str(), idx == cursor ? UI_YELLOW : (it.kind == K_FILE || it.kind == K_EXTRA) ? UI_WHITE : UI_CYAN, UI_BLUE);   // 選択中=黄、フォルダ=水色
+      uiText(64, y, label.c_str(), idx == cursor ? UI_YELLOW : (it.kind == K_FILE || it.kind == K_EXTRA) ? UI_WHITE : UI_CYAN, UI_BLUE);
     };
     while (!changeDir) {
       if (redraw) {
@@ -707,7 +632,6 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
         redraw = false;
       }
       while (!changeDir) {
-        // キーボード、なければポート1のコントローラ(JoyKeys.hpp)
         int sc;
         if (kb && kb->scancodeAvailable() > 0) {
           sc = kb->getNextScancode(0);
@@ -722,15 +646,15 @@ static String showFileSelector(const char *title, const char *dirPath, const cha
           int n = (int)items.size();
           if (sc == 0x75 && cursor > 0) { cursor--; redraw = true; }
           else if (sc == 0x72 && cursor < n - 1) { cursor++; redraw = true; }
-          else if (sc == 0x7D) { cursor = cursor - maxRows < 0 ? 0 : cursor - maxRows; redraw = true; }        // PageUp
-          else if (sc == 0x7A) { cursor = cursor + maxRows >= n ? n - 1 : cursor + maxRows; redraw = true; }   // PageDown
+          else if (sc == 0x7D) { cursor = cursor - maxRows < 0 ? 0 : cursor - maxRows; redraw = true; }
+          else if (sc == 0x7A) { cursor = cursor + maxRows >= n ? n - 1 : cursor + maxRows; redraw = true; }
           else if (sc == 0x76) { uiFillRect(0, 0, MSX2_SCREEN_W - 1, MSX2_SCREEN_H - 1, UI_BLACK); clearKeyBuffer(); return ""; }
-          else if ((sc == 0x66 && sub != "") || (sc == 0x5A && items[cursor].kind == K_UP)) {    // 1つ上へ
+          else if ((sc == 0x66 && sub != "") || (sc == 0x5A && items[cursor].kind == K_UP)) {
             int p = sub.lastIndexOf('/');
-            want = p >= 0 ? sub.substring(p + 1) : sub;      // 出てきたフォルダにカーソルを置く
+            want = p >= 0 ? sub.substring(p + 1) : sub;
             sub = p >= 0 ? sub.substring(0, p) : "";
             changeDir = true;
-          } else if (sc == 0x5A && items[cursor].kind == K_DIR) {                                // フォルダに入る
+          } else if (sc == 0x5A && items[cursor].kind == K_DIR) {
             sub = sub == "" ? items[cursor].name : sub + "/" + items[cursor].name;
             want = "";
             changeDir = true;
@@ -752,14 +676,14 @@ static void handleDiskSelect(int d) {
   if (!diskBuf[d]) { flashStatus("NO DISK.ROM", 1000); return; }
   char title[40];
   sprintf(title, "--- SELECT DISK %d (ESC TO SKIP) ---", d + 1);
-  String cur = strncmp(diskPath[d], SD_ROOT "/DISK/", sizeof(SD_ROOT "/DISK/") - 1) == 0 ? String(diskPath[d] + sizeof(SD_ROOT "/DISK/") - 1) : String("");   // 今のディスクから選び始める
+  String cur = strncmp(diskPath[d], SD_ROOT "/DISK/", sizeof(SD_ROOT "/DISK/") - 1) == 0 ? String(diskPath[d] + sizeof(SD_ROOT "/DISK/") - 1) : String("");
   String sel = showFileSelector(title, SD_ROOT "/DISK", ".DSK", {}, cur);
   if (sel != "") flashStatus(loadDisk(d, SD_ROOT "/DISK/" + sel) ? "LOAD SUCCESS" : "LOAD ERROR!", 1000);
 }
 
 static Msx2Mapper detectMapper(const char *filename, uint32_t size) {
   if (size <= 0x8000) return MSX2_MAP_NONE;
-  const char *base = strrchr(filename, '/');       // フォルダ名のタグは見ない
+  const char *base = strrchr(filename, '/');
   String up = String(base ? base + 1 : filename);
   up.toUpperCase();
   if (up.indexOf("(A16)") >= 0) return MSX2_MAP_ASCII16;
@@ -770,9 +694,8 @@ static Msx2Mapper detectMapper(const char *filename, uint32_t size) {
   return MSX2_MAP_NONE;
 }
 
-// slot = 1 / 2
 static bool loadCartridge(const String &path, int slot) {
-  static uint8_t *loaded[3];                       // 起動メニューで読み直したときに前のぶんを返す
+  static uint8_t *loaded[3];
   File f = SD.open(path.c_str());
   if (!f) return false;
   uint32_t size = f.size();
@@ -782,29 +705,19 @@ static bool loadCartridge(const String &path, int slot) {
   uint8_t *rom = (uint8_t *)ps_malloc(rs);
   if (!rom) { f.close(); return false; }
   loaded[slot] = rom;
-  memset(rom, 0xFF, rs);                           // 2のべき乗に切り上げた残りは空きROM
+  memset(rom, 0xFF, rs);
   f.read(rom, size);
   f.close();
   Msx2Mapper m = detectMapper(path.c_str(), size);
   static const char *names[] = { "NONE", "KONAMI", "ASCII8", "ASCII16", "RTYPE", "KONAMI_SCC" };
   Serial.printf("Cartridge slot%d: %s (%u bytes) mapper=%s\n", slot, path.c_str(), (unsigned)size, names[m]);
 #if MSX2_PROFILE
-  // PSRAM の上位2MB(0x3FA00000〜)はコア1側のキャッシュを通る(デュアルコア時の LOWHIGH 配置)
   Serial.printf("PROF cart rom=%p-%p\n", rom, rom + rs);
 #endif
   msx2SetCartridge(slot, rom, rs, m);
   return true;
 }
 
-// ---------------------------------------------------------------------------
-//  起動メニュー
-//    Slot1 / Slot2 / Disk BIOS / DiskA / DiskB / Mouse / Joy B3 / Run を ↑↓ で選び、Enter で変更・起動。
-//    選んでいる項目は反転表示。
-// ---------------------------------------------------------------------------
-// (BootConfig の定義は、Arduino が関数の宣言を自動で入れる位置より前に置くため先頭にある)
-
-// Disk BIOS の既定: カートリッジだけで起動するときは外す(ワークエリアを取られて動かない
-// ゲームがあるため)。ディスクを入れたとき、何も挿さないとき(BASIC)は入れる。
 static bool isRomItem(const String &s) { return s != "" && s != ITEM_FMPAC && s != ITEM_SCC; }
 static void bootAutoDiskBios(BootConfig &c) {
   if (c.diskBiosManual) return;
@@ -812,8 +725,6 @@ static void bootAutoDiskBios(BootConfig &c) {
   c.diskBios = !cart || c.disk[0] != "" || c.disk[1] != "";
 }
 
-// ジョイスティックのボタン1〜3のキー(PC-88 版の Joy B1〜B3 と同じ。SD の /MSX2/JOYKEY.CFG に3バイト。
-// 前の版の1バイトのファイルはボタン3のキーとして読む)
 static const char *JOYKEY_FILE = SD_ROOT "/JOYKEY.CFG";
 static void loadJoyKey() {
   File f = SD.open(JOYKEY_FILE, FILE_READ);
@@ -832,13 +743,10 @@ static void saveJoyKey() {
   f.close();
 }
 
-// 起動メニューの各行に出ている内容(選択の状態 + 文字)を覚えておき、変わった行だけ描き直す。
-// 画面の行に直接書くので、毎回全部塗り直すとちらつく。0〜9 = 項目、10 = 案内、11 = メッセージ
 static char menuShown[12][72];
 static bool menuValid = false;
-static void bootMenuInvalidate() { menuValid = false; }   // ファイル選択などで画面を上書きしたあと
+static void bootMenuInvalidate() { menuValid = false; }
 
-// capture: カーソルの Joy B1〜B3 の行がキーを待っている(黄色で表示)
 static void bootMenuDraw(const BootConfig &c, int cursor, bool hasDiskRom, const char *msg, bool capture) {
   static const int X0 = 40, X1 = MSX2_SCREEN_W - 41, Y0 = 40, DY = 14;
   if (!menuValid) {
@@ -864,7 +772,7 @@ static void bootMenuDraw(const BootConfig &c, int cursor, bool hasDiskRom, const
       case 9: snprintf(line, sizeof(line), "Run"); break;
     }
     bool sel = (i == cursor);
-    char shown[72];                                // 1 文字目 = 状態(N 通常 / S 選択 / C キー待ち)
+    char shown[72];
     snprintf(shown, sizeof(shown), "%c%s", sel ? (capture ? 'C' : 'S') : 'N', line);
     if (strcmp(shown, menuShown[i]) == 0) continue;
     strcpy(menuShown[i], shown);
@@ -886,7 +794,6 @@ static void bootMenuDraw(const BootConfig &c, int cursor, bool hasDiskRom, const
   }
 }
 
-// 選んだ内容で ROM / ディスクを読み込む。失敗したら理由を返す(メニューに戻る)。
 static const char *bootMenuApply(const BootConfig &c) {
   for (int s = 0; s < 2; s++) {
     msx2SetCartridge(s + 1, nullptr, 0, c.slot[s] == ITEM_SCC ? MSX2_MAP_SCC : MSX2_MAP_NONE);
@@ -903,7 +810,6 @@ static const char *bootMenuApply(const BootConfig &c) {
 
 static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
   auto kb = PS2Controller.keyboard();
-  // 選べる項目(ディスク関係は DISK.ROM があるときだけ)
   std::vector<int> items = { 0, 1 };
   if (hasDiskRom) { items.push_back(2); items.push_back(3); items.push_back(4); }
   items.push_back(5);
@@ -911,7 +817,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
   items.push_back(7);
   items.push_back(8);
   items.push_back(9);
-  int pos = 0;                                     // 最初は Slot1(↑ で一番下の Run へ回り込む)
+  int pos = 0;
   const char *msg = nullptr;
   bool isBreak = false, isE0 = false, redraw = true, capture = false;
   clearKeyBuffer();
@@ -919,7 +825,6 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
   for (;;) {
     if (redraw) { bootAutoDiskBios(c); bootMenuDraw(c, items[pos], hasDiskRom, msg, capture); redraw = false; }
     for (;;) {
-      // キーボード、なければポート1のコントローラ(キーを割り当て中はキーボードだけ)
       int sc;
       bool e0;
       if (kb && kb->scancodeAvailable() > 0) {
@@ -931,23 +836,23 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
         if (isBreak) { isBreak = false; continue; }
       } else if (!capture && (sc = joyMenuScancode(joyMenuPoll(), &e0)) != 0) {
       } else break;
-      if (capture) {                               // ジョイスティックのボタンに割り当てるキー
+      if (capture) {
         uint8_t rb = e0 ? key_map_e0[sc & 0xFF] : key_map[sc & 0xFF];
-        if (rb != 0xFF) { joyKey[items[pos] - 6] = rb; saveJoyKey(); }   // MSX に無いキー(F6〜F12 など)なら取り消し
+        if (rb != 0xFF) { joyKey[items[pos] - 6] = rb; saveJoyKey(); }
         capture = false;
         redraw = true;
         continue;
       }
       if (sc == 0x75)      { pos = (pos + (int)items.size() - 1) % (int)items.size(); redraw = true; }
       else if (sc == 0x72) { pos = (pos + 1) % (int)items.size(); redraw = true; }
-      else if (sc == 0x66 && items[pos] >= 6 && items[pos] <= 8) { joyKey[items[pos] - 6] = 0xFF; saveJoyKey(); redraw = true; }   // BackSpace: なし
+      else if (sc == 0x66 && items[pos] >= 6 && items[pos] <= 8) { joyKey[items[pos] - 6] = 0xFF; saveJoyKey(); redraw = true; }
       else if (sc == 0x5A) {
         int it = items[pos];
         msg = nullptr;
         if (it == 0 || it == 1) {
           std::vector<String> extra = { ITEM_NONE, ITEM_SCC };
           if (it == 1 && hasFmPac) extra.push_back(ITEM_FMPAC);
-          bootMenuInvalidate();                    // ファイル選択の画面で上書きされる
+          bootMenuInvalidate();
           String sel = showFileSelector(it ? "-- SELECT ROM FOR SLOT 2 --" : "-- SELECT ROM FOR SLOT 1 --",
                                         SD_ROOT "/ROM", ".ROM", extra, c.slot[it] == "" ? String(ITEM_NONE) : c.slot[it]);
           if (sel != "") c.slot[it] = (sel == ITEM_NONE) ? "" : sel;
@@ -963,7 +868,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
                                         SD_ROOT "/DISK", ".DSK", { ITEM_NONE }, c.disk[d] == "" ? String(ITEM_NONE) : c.disk[d]);
           if (sel != "") c.disk[d] = (sel == ITEM_NONE) ? "" : sel;
         } else if (it >= 6 && it <= 8) {
-          capture = true;                          // 次に押したキーをそのボタンに割り当てる
+          capture = true;
         } else if (it == 9) {
           bootAutoDiskBios(c);
           bootMenuDraw(c, it, hasDiskRom, "LOADING...", false);
@@ -978,14 +883,10 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
   }
 }
 
-// ---------------------------------------------------------------------------
-//  キーボード / ジョイスティック
-// ---------------------------------------------------------------------------
 static volatile bool isPaused = false;
 static volatile bool frameReady = false;
 
-// F6 で Z80 の速さを切り替える(1ラインに実行するクロック数。MSX1 版でも F6 は空いている)
-static const int CPU_SPEEDS[3] = { 205, 285, 365 };
+static const int CPU_SPEEDS[3] = { 228, 300, 372 };
 static const char *const CPU_SPEED_NAMES[3] = { "CPU: Normal", "CPU: High", "CPU: Super" };
 static int cpuSpeed = 0;
 
@@ -994,6 +895,11 @@ static void updateKeyboard() {
   static bool f6_held = false, f8_held = false, f10_held = false, f11_held = false, f12_held = false;
   auto kb = PS2Controller.keyboard();
   if (!kb) return;
+  {
+    static uint8_t ledShown = 0xFF;
+    const uint8_t led = msx2Leds();
+    if (led != ledShown) { ledShown = led; kb->setLEDs(false, (led & 1) != 0, (led & 2) != 0); }
+  }
   int count = kb->scancodeAvailable();
   while (count-- > 0) {
     int sc = kb->getNextScancode(0);
@@ -1002,7 +908,7 @@ static void updateKeyboard() {
     if (sc == 0xE0) { isE0 = true; continue; }
     if (sc == 0x12 || sc == 0x59) isShift = !isBreak;
 
-    if (sc == 0x0A) {                                // F8: PSGをSCC波形で鳴らす / Shift+F8: スプライトの枚数制限の切り替え(MSX1 版と同じ)
+    if (sc == 0x0A) {
       if (!isBreak && !f8_held) {
         f8_held = true;
         if (isShift) {
@@ -1014,7 +920,7 @@ static void updateKeyboard() {
           flashStatus(psg2scc ? "SCC ON" : "SCC OFF", 1000);
         }
       } else if (isBreak) f8_held = false;
-    } else if ((sc == 0x09 || sc == 0x78) && !isE0) { // F10/F11: (一時停止中) ドライブ1/2のディスク選択 / Shift:書き戻し
+    } else if ((sc == 0x09 || sc == 0x78) && !isE0) {
       int d = (sc == 0x78) ? 1 : 0;
       bool &held = d ? f11_held : f10_held;
       if (!isBreak && !held) {
@@ -1023,22 +929,20 @@ static void updateKeyboard() {
           if (!isShift) {
             handleDiskSelect(d);
             flashStatus("PAUSED!", 0);
-            // 選択画面がキーを離した信号を読んでしまうので、押したままの扱いを消す
-            // (残すと次の F10/F11 が1回目だけ無視される)
             held = isShift = false;
             for (int r = 0; r < 12; r++) msx2_key_matrix[r] = 0xFF;
           }
           else saveDisk(d);
         }
       } else if (isBreak) held = false;
-    } else if (sc == 0x0B && !isE0) {                // F6: Z80 の速さ Normal → High → Super → Normal
+    } else if (sc == 0x0B && !isE0) {
       if (!isBreak && !f6_held) {
         f6_held = true;
         cpuSpeed = (cpuSpeed + 1) % 3;
         msx2SetCpuCycles(CPU_SPEEDS[cpuSpeed]);
         timedStatus(CPU_SPEED_NAMES[cpuSpeed], 500);
       } else if (isBreak) f6_held = false;
-    } else if (sc == 0x07) {                         // F12: 一時停止 / Shift:リセット
+    } else if (sc == 0x07) {
       if (!isBreak && !f12_held) {
         f12_held = true;
         if (isShift) ESP.restart();
@@ -1047,12 +951,9 @@ static void updateKeyboard() {
       } else if (isBreak) f12_held = false;
     }
 
-    // KeyboardSystem.hpp の表で MSX のマトリクスへ(E0 付き: カーソル・Home・Ins・Del・End・
-    // PageUp/Down・テンキーの / と Enter・右 Alt など)
     int row = -1, bit = -1;
     uint8_t res = isE0 ? key_map_e0[sc & 0xFF] : key_map[sc & 0xFF];
     if (res != 0xFF) { row = res >> 4; bit = res & 0x0F; }
-    // 一時停止中は押下を伝えない(離したのは伝える。押しっぱなしで残らないように)
     if (row >= 0 && row < 12 && (!isPaused || isBreak)) {
       if (isBreak) msx2_key_matrix[row] |= (1 << bit);
       else msx2_key_matrix[row] &= ~(1 << bit);
@@ -1062,30 +963,23 @@ static void updateKeyboard() {
   }
 }
 
-// 外部の変換器からシリアル(IO39)で届くアタリ仕様ジョイスティック(MSX1版と同じ形式)
-// 1バイト: bit7 = 2P、bit0〜5 = ↑↓←→ トリガA/B、bit6 = ボタン3(0 = 押下)
-// マウスをつないだポートのコントローラは、ゲームには渡さずキーを押す(JoyKeys.hpp)
 static void updateController() {
   uint8_t j1 = 0x7F, j2 = 0x7F;
   while (Serial1.available() > 0) {
     uint8_t b = Serial1.read();
     if (b & 0x80) j2 = b & 0x7F; else j1 = b & 0x7F;
   }
-  msx2_joy[0] = 0x40 | ((mousePortSel == 1 ? 0x7F : j1) & 0x3F);   // bit6=1: JIS配列
+  msx2_joy[0] = 0x40 | ((mousePortSel == 1 ? 0x7F : j1) & 0x3F);
   msx2_joy[1] = 0x40 | ((mousePortSel == 2 ? 0x7F : j2) & 0x3F);
-  //joyKeysApply(mousePortSel == 2 ? j2 : j1, mousePortSel != 0, msx2_key_matrix);
 }
 
-// ---------------------------------------------------------------------------
-//  Z80 / VDP (コア0)
-// ---------------------------------------------------------------------------
 void IRAM_ATTR cpuTask(void *) {
-  const int64_t frameUs = 16683;                     // NTSC 59.94Hz
+  const int64_t frameUs = 16683;
   int64_t next = esp_timer_get_time();
 #ifdef MSX2_PERF_LOG
   uint32_t sum = 0, mx = 0, over = 0, n = 0;
 #if MSX2_PROFILE
-  char prof[1024];                                   // msx2ProfReport の2行+1行。次のフレームから少しずつ送る
+  char prof[1024];
   int profLen = 0, profPos = 0;
 #endif
 #endif
@@ -1106,8 +1000,8 @@ void IRAM_ATTR cpuTask(void *) {
     if (++n == 300) {
       Serial.printf("FRAME us: avg=%u max=%u over=%u/300 (budget=%d)\n", sum / n, mx, over, (int)frameUs);
 #if MSX2_PROFILE
-      profLen = msx2ProfReport(prof, sizeof(prof), getCpuFrequencyMhz());   // 同じ300フレームの内訳
-      {                                              // cpuTask のスタックの残り(最小値)と、この時点のVDPの設定
+      profLen = msx2ProfReport(prof, sizeof(prof), getCpuFrequencyMhz());
+      {
         const uint8_t *r = vdpState()->reg;
         int k = snprintf(prof + profLen, sizeof(prof) - profLen,
                          "PROF stack free %u B | vdp mode %02X lines %d R0-11 %02X %02X %02X %02X %02X %02X %02X %02X"
@@ -1123,9 +1017,6 @@ void IRAM_ATTR cpuTask(void *) {
     }
 #if MSX2_PROFILE
     else if (profPos < profLen) {
-      // Serial は送信バッファが無く、UART の FIFO(128バイト)に入りきらないぶんは送り終わるまで
-      // 待たされる。1フレームに64バイト(115200bpsで約5.6ms)ずつなら、遅れを取り戻すために
-      // フレームを続けて回しているときでも待たずに済む。
       int k = profLen - profPos;
       if (k > 64) k = 64;
       Serial.write((const uint8_t *)prof + profPos, k);
@@ -1138,14 +1029,11 @@ void IRAM_ATTR cpuTask(void *) {
       if (wait >= 1000) vTaskDelay(pdMS_TO_TICKS(wait / 1000));
       while (esp_timer_get_time() < next) asm volatile("nop");
     } else if (wait < -frameUs * 4) {
-      next = now;                                    // 大きく遅れたら追いかけない
+      next = now;
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-//  setup / loop
-// ---------------------------------------------------------------------------
 static void haltWithMessage(const char *msg) {
   Serial.println(msg);
   uiFillRect(0, 0, MSX2_SCREEN_W - 1, MSX2_SCREEN_H - 1, UI_BLUE);
@@ -1169,9 +1057,6 @@ void setup() {
   PS2Controller.keyboard()->begin(GPIO_NUM_33, GPIO_NUM_32, false, false);
   initKeyMap(KEYBORD_MAP);
 
-  // ---- 画面: 内部RAMの大物より先に確保する ----
-  // FabGLはビューポートを確保するとき内部RAMの最大連続空きを約40KB残そうとし、
-  // それを割り込むと確保を打ち切る(X1で実測)。だからRAMより先に取る。
   printHeap("before VGA");
   DisplayController.begin();
 #if MSX2_FULLHD
@@ -1181,7 +1066,6 @@ void setup() {
     t.scanCount = MSX2_FHD_SCAN;
     DisplayController.setResolution(t, -1, -1, false);
   }
-  // DMAの記述子が増えるぶん内部RAMを使う。ビューポートが取り切れなかったら 640x480 に戻す
   if (DisplayController.getViewPortHeight() < MSX2_SCREEN_H) {
     Serial.printf("1920x1080 mode: viewport %d rows only, falling back to 640x480\n", DisplayController.getViewPortHeight());
     DisplayController.setResolution(MSX2_MODELINE_VGA, -1, -1, false);
@@ -1207,8 +1091,6 @@ void setup() {
   uiFillRect(0, 0, MSX2_SCREEN_W - 1, MSX2_SCREEN_H - 1, UI_BLACK);
   scratchRow = (uint8_t *)heap_caps_malloc(MSX2_SCREEN_W, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
 
-  // ---- RAM (メモリマッパー) ----
-  // セグメント0(ページ3: スタック/ワークエリア)から順に内部RAMへ。
   int internalSegs = 0;
   for (int i = 0; i < MSX2_MAPPER_SEGMENTS; i++) {
     bool internal = false;
@@ -1229,7 +1111,6 @@ void setup() {
   vdpInit(vram, vdpRows, sync);
   printHeap("after RAM");
 
-  // ---- 音 ----
   for (int i = 0; i < 32; i++) {
     scc_waveform[0][i] = SCC_Ys2_Lead[i];
     scc_waveform[1][i] = SCC_Ys2_Back[i];
@@ -1252,26 +1133,23 @@ void setup() {
   soundGenerator.setVolume(64);
   soundGenerator.play(true);
 
-  // ---- ROM ----
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, SPI)) haltWithMessage("SD CARD NOT FOUND");
 
   uint32_t n;
   bool cbios = false;
-  bool msx2Bios = false;                           // MSX2(+ でない)の BIOS
+  bool msx2Bios = false;
   uint8_t *bios = loadFile(SD_ROOT "/MSX2P.ROM", &n, true);
   if (!bios) {
     bios = loadFile(SD_ROOT "/MSX2.ROM", &n, true);
     msx2Bios = (bios != nullptr);
   }
   if (!bios) {
-    // 実機のROMが無ければ C-BIOS (カートリッジだけ起動できるフリーのBIOS)
     bios = loadFile(SD_ROOT "/cbios_main_msx2+_jp.rom", &n, true);
     cbios = (bios != nullptr);
   }
   if (!bios) haltWithMessage(SD_ROOT "/MSX2P.ROM NOT FOUND");
   msx2SetBios(bios);
-  // VDP: BIOS の機種番号(002Dh: 1=MSX2, 2=MSX2+)に合わせる。MSX2 の BIOS なら V9938 として動かす
 #if MSX2_VDP == 1
   bool v9938 = true;
 #elif MSX2_VDP == 2
@@ -1282,7 +1160,6 @@ void setup() {
   vdpSetV9938(v9938);
   Serial.printf("BIOS version byte %02X -> VDP %s\n", n > 0x2D ? bios[0x2D] : 0xFF, v9938 ? "V9938 (MSX2)" : "V9958 (MSX2+)");
   if (cbios) {
-    // C-BIOS はスロット0が拡張なし・F4hが反転型の前提
     msx2SetSlotExpanded(0, false);
     msx2SetF4Inverted(true);
     if (uint8_t *p = loadFile(SD_ROOT "/cbios_logo_msx2+.rom", &n, false)) msx2SetRom(0, 0, 0x8000, p, n);
@@ -1290,13 +1167,11 @@ void setup() {
   } else {
     if (uint8_t *p = loadFile(msx2Bios ? SD_ROOT "/MSX2EXT.ROM" : SD_ROOT "/MSX2PEXT.ROM", &n, false)) msx2SetSubRom(p);
     else Serial.println(msx2Bios ? "Warning: /MSX2EXT.ROM (sub ROM) not found" : "Warning: /MSX2PEXT.ROM (sub ROM) not found");
-    // 漢字BASIC は MSX2+ の機能なので、MSX2 の BIOS のときは載せない
     if (!msx2Bios)
       if (uint8_t *p = loadFile(SD_ROOT "/KNJBASIC.ROM", &n, false)) msx2SetKanjiBasic(p, n);
   }
   if (uint8_t *p = loadFile(SD_ROOT "/KANJI.ROM", &n, false)) msx2SetKanjiFont(p, n);
 
-  // ---- 起動メニュー (スロット1/2・Disk BIOS・ドライブ1/2) ----
   uint32_t fmpacSize = 0;
   uint8_t *fmpacRom = loadFile(SD_ROOT "/FMPAC.ROM", &fmpacSize, false);
   uint8_t *diskRom = cbios ? nullptr : loadFile(SD_ROOT "/DISK.ROM", &n, false);
@@ -1309,13 +1184,9 @@ void setup() {
   boot.diskBiosManual = false;
   boot.mouse = 0;
   loadJoyKey();
-  Serial1.begin(115200, SERIAL_8N1, 39, -1);         // 起動メニューもポート1のコントローラで操作できる
+  Serial1.begin(115200, SERIAL_8N1, 39, -1);
   bootMenu(boot, diskRom && diskBuf[0] && diskBuf[1], fmpacRom != nullptr);
 
-  // FM音源: スロット2が FM-PAC なら内蔵MSX-MUSICは載せない。
-  // (FM-PAC の印 "PAC2OPLL" やカートリッジスロットしか探さない古いソフトでもFMが鳴る。
-  //  内蔵MSX-MUSIC対応のソフトは全スロットから "OPLL" を探すので FM-PAC でも鳴る)
-  // スロット2にほかのROMを挿したときは、FMが鳴るように内蔵MSX-MUSICを載せる。
   uint8_t *sram = (fmpacRom && boot.slot[1] == ITEM_FMPAC) ? (uint8_t *)ps_malloc(0x2000) : nullptr;
   if (sram) {
     memset(sram, 0xFF, 0x2000);
@@ -1347,10 +1218,6 @@ void setup() {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-//  FM-PAC の SRAM(8KB)を SD の /MSX2/FMPAC.PAC に保存する(openMSX などと同じ形:
-//  "PAC2 BACKUP DATA" の 16 バイトのあとに 1FFEh バイト)。書き込みが止まって 2 秒たったら保存。
-// ---------------------------------------------------------------------------
 static const char *FMPAC_SRAM_FILE = SD_ROOT "/FMPAC.PAC";
 static const char FMPAC_SRAM_HEADER[17] = "PAC2 BACKUP DATA";
 
@@ -1381,9 +1248,6 @@ static void saveFmPacSramIfChanged() {
   Serial.println("FM-PAC SRAM saved");
 }
 
-// ---------------------------------------------------------------------------
-//  PS/2 マウス(起動メニューで選んだジョイスティックポートにつなぐ)
-// ---------------------------------------------------------------------------
 static void updateMouse() {
   if (!mouseOn) return;
   auto m = PS2Controller.mouse();
@@ -1391,8 +1255,8 @@ static void updateMouse() {
   while (m->deltaAvailable()) {
     MouseDelta d;
     if (!m->getNextDelta(&d, 0)) break;
-    msx2_mouse_x += d.deltaX;                        // 右が +
-    msx2_mouse_y += d.deltaY;                        // 上が +
+    msx2_mouse_x += d.deltaX;
+    msx2_mouse_y += d.deltaY;
     msx2_mouse_buttons = (d.buttons.left ? 1 : 0) | (d.buttons.right ? 2 : 0);
   }
 }
@@ -1426,7 +1290,6 @@ void loop() {
     vTaskDelay(pdMS_TO_TICKS(5));
     updateKeyboard();
   } else {
-    // リングは BUFFER_SIZE=256 / 16384Hz = 約15.6ms ぶんあるので1tick眠っても途切れない
     vTaskDelay(1);
   }
 }

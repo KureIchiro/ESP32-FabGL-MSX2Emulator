@@ -14,7 +14,6 @@ struct tms9918a *tms9918a_create(void);
 #endif
 
 struct tms9918a {
-  // --- [保存が必要なメンバ] ---
   uint8_t reg[8];
   uint8_t status;
   unsigned int latch;
@@ -24,18 +23,16 @@ struct tms9918a {
   int trace;
 	int limit_sprites;
 
-	// --- [保存不要・またはポインタなので別途管理するメンバ] ---
-  uint8_t *framebuffer;   // ポインタなので退避が必要
-  uint8_t *active_raster; // ポインタなので退避が必要
-  uint8_t *visible_raster;// ポインタなので退避が必要
-  uint8_t colourmap[16];  // RGB222 palette (00BBGGRR), initialized from msx_palette
+  uint8_t *framebuffer;
+  uint8_t *active_raster;
+  uint8_t *visible_raster;
+  uint8_t colourmap[16];
 
-  // 巨大な実体バッファ（保存対象から外したい）
-  uint8_t rasterbuffer0[256 * 192]; 
+  uint8_t rasterbuffer0[256 * 192];
   uint8_t rasterbuffer1[256 * 192];
-	uint8_t sprite_line_list[192][32]; // 各行に並ぶスプライトのインデックス
-	uint8_t sprite_line_count[192];    // 各行に何枚あるか
-	uint8_t colbuf[256 + 64]; // 衝突用の一時バッファなので保存不要
+	uint8_t sprite_line_list[192][32];
+	uint8_t sprite_line_count[192];
+	uint8_t colbuf[256 + 64];
 };
 extern uint8_t sram_framebuffer[];
 

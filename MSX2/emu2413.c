@@ -33,59 +33,51 @@
 #endif
 
 #define OPLL_TONE_NUM 1
-/* clang-format off */
 static const uint8_t default_inst[OPLL_TONE_NUM][(16 + 3) * 8] = {{
-0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, // 0: User
-0x71,0x61,0x18,0x17,0xd0,0x78,0x00,0x17, // 1: Violin
-0x13,0x41,0x1a,0x0d,0xd8,0xf7,0x23,0x13, // 2: Guitar
-0x13,0x01,0x99,0x00,0xf2,0xc4,0x21,0x23, // 3: Piano
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x71,0x61,0x18,0x17,0xd0,0x78,0x00,0x17,
+0x13,0x41,0x1a,0x0d,0xd8,0xf7,0x23,0x13,
+0x13,0x01,0x99,0x00,0xf2,0xc4,0x21,0x23,
 
-0x21,0x61,0x1b,0x07,0xaf,0x64,0x40,0x27,// 4: Flute
-0x32,0x21,0x1e,0x06,0xe1,0x76,0x01,0x28, // 5: Clarinet
-0x31,0x22,0x16,0x05,0xe0,0x71,0x00,0x18, // 6: Oboe
-0x21,0x61,0x1d,0x07,0x82,0x81,0x11,0x07, // 7: Trumpet
+0x21,0x61,0x1b,0x07,0xaf,0x64,0x40,0x27,
+0x32,0x21,0x1e,0x06,0xe1,0x76,0x01,0x28,
+0x31,0x22,0x16,0x05,0xe0,0x71,0x00,0x18,
+0x21,0x61,0x1d,0x07,0x82,0x81,0x11,0x07,
 
-0x33,0x21,0x2d,0x13,0xb0,0x70,0x00,0x07, // 8: Organ
-0x61,0x61,0x1b,0x06,0x64,0x65,0x10,0x17, // 9: Horn
-0x41,0x61,0x0b,0x18,0x85,0xf0,0x81,0x07, // A: Synthesizer
-0x33,0x01,0xC3,0x51,0xec,0xef,0x10,0x06, // B: Harpsichord
+0x33,0x21,0x2d,0x13,0xb0,0x70,0x00,0x07,
+0x61,0x61,0x1b,0x06,0x64,0x65,0x10,0x17,
+0x41,0x61,0x0b,0x18,0x85,0xf0,0x81,0x07,
+0x33,0x01,0xC3,0x51,0xec,0xef,0x10,0x06,
 
-0x16,0xc1,0x24,0x07,0xe8,0xe8,0x22,0x12, // C: Vibraphone
-0x61,0x50,0x0c,0x05,0xd2,0xf5,0x40,0x42, // D: Synthsizer Bass
-0x01,0x01,0x55,0x03,0xe9,0x90,0x03,0x02, // E: Acoustic Bass
-0x21,0x21,0x87,0x02,0xf1,0xe4,0xe2,0xf5, // F: Electric Guitar
+0x16,0xc1,0x24,0x07,0xe8,0xe8,0x22,0x12,
+0x61,0x50,0x0c,0x05,0xd2,0xf5,0x40,0x42,
+0x01,0x01,0x55,0x03,0xe9,0x90,0x03,0x02,
+0x21,0x21,0x87,0x02,0xf1,0xe4,0xe2,0xf5,
 
-0x01,0x01,0x18,0x08,0xef,0xfa,0x6c,0x6e, // R: Bass Drum
-0x01,0x01,0x80,0x00,0xda,0xea,0xa9,0x68, // R: High-Hat / Snare Drum
-0x05,0x01,0x80,0x00,0xea,0xe9,0x5b,0x56, // R: Tom-tom / Top Cymbal
+0x01,0x01,0x18,0x08,0xef,0xfa,0x6c,0x6e,
+0x01,0x01,0x80,0x00,0xda,0xea,0xa9,0x68,
+0x05,0x01,0x80,0x00,0xea,0xe9,0x5b,0x56,
 }};
-/* clang-format on */
 
-/* phase increment counter */
 #define DP_BITS 19
 #define DP_WIDTH (1 << DP_BITS)
 #define DP_BASE_BITS (DP_BITS - PG_BITS)
 
-/* dynamic range of envelope output */
 #define EG_STEP 0.375
 #define EG_BITS 7
 #define EG_MUTE ((1 << EG_BITS) - 1)
 #define EG_MAX (EG_MUTE - 4)
 
-/* dynamic range of total level */
 #define TL_STEP 0.75
 #define TL_BITS 6
 
-/* damper speed before key-on. key-scale affects. */
 #define DAMPER_RATE 12
 
 #define TL2EG(d) ((d) << 1)
 
-/* sine table */
-#define PG_BITS 10 /* 2^10 = 1024 length sine table */
+#define PG_BITS 10
 #define PG_WIDTH (1 << PG_BITS)
 
-/* exp_table[x] = round((exp2((double)x / 256.0) - 1) * 1024) */
 static const uint16_t exp_table[256] DRAM_ATTR = {
   0, 3, 6, 8, 11, 14, 17, 20, 22, 25, 28, 31, 34, 37, 40, 42,
   45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84, 87, 90,
@@ -105,7 +97,6 @@ static const uint16_t exp_table[256] DRAM_ATTR = {
   937, 942, 948, 953, 959, 964, 969, 975, 980, 986, 991, 996, 1002, 1007, 1013, 1018
 };
 
-/* ROM Only: Only 1/4 of the sine wave is stored to save memory (512 Bytes) */
 static const uint16_t logsin_table[256] DRAM_ATTR = {
   2137,
   1731,
@@ -365,19 +356,17 @@ static const uint16_t logsin_table[256] DRAM_ATTR = {
   0,
 };
 
-/* pitch modulator */
 static const int8_t pm_table[8][8] DRAM_ATTR = {
-  { 0, 0, 0, 0, 0, 0, 0, 0 },     // fnum = 000xxxxxx
-  { 0, 0, 1, 0, 0, 0, -1, 0 },    // fnum = 001xxxxxx
-  { 0, 1, 2, 1, 0, -1, -2, -1 },  // fnum = 010xxxxxx
-  { 0, 1, 3, 1, 0, -1, -3, -1 },  // fnum = 011xxxxxx
-  { 0, 2, 4, 2, 0, -2, -4, -2 },  // fnum = 100xxxxxx
-  { 0, 2, 5, 2, 0, -2, -5, -2 },  // fnum = 101xxxxxx
-  { 0, 3, 6, 3, 0, -3, -6, -3 },  // fnum = 110xxxxxx
-  { 0, 3, 7, 3, 0, -3, -7, -3 },  // fnum = 111xxxxxx
+  { 0, 0, 0, 0, 0, 0, 0, 0 },
+  { 0, 0, 1, 0, 0, 0, -1, 0 },
+  { 0, 1, 2, 1, 0, -1, -2, -1 },
+  { 0, 1, 3, 1, 0, -1, -3, -1 },
+  { 0, 2, 4, 2, 0, -2, -4, -2 },
+  { 0, 2, 5, 2, 0, -2, -5, -2 },
+  { 0, 3, 6, 3, 0, -3, -6, -3 },
+  { 0, 3, 7, 3, 0, -3, -7, -3 },
 };
 
-/* amplitude lfo table */
 static const uint8_t am_table[210] DRAM_ATTR = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
                                                  2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
                                                  4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5,
@@ -394,7 +383,6 @@ static const uint8_t am_table[210] DRAM_ATTR = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1
                                                  3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2,
                                                  1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0 };
 
-/* envelope decay increment step table */
 static const uint8_t eg_step_tables[4][8] DRAM_ATTR = {
   { 0, 1, 0, 1, 0, 1, 0, 1 },
   { 0, 1, 0, 1, 1, 1, 0, 1 },
@@ -412,8 +400,6 @@ enum __OPLL_EG_STATE { ATTACK,
 static const uint32_t ml_table[16] DRAM_ATTR = { 1, 1 * 2, 2 * 2, 3 * 2, 4 * 2, 5 * 2, 6 * 2, 7 * 2,
                                                  8 * 2, 9 * 2, 10 * 2, 10 * 2, 12 * 2, 12 * 2, 15 * 2, 15 * 2 };
 
-/* kl_table_int: Pre-calculated integer values representing decibel decay steps. 
-   Removes the need for floating point math and huge memory allocations. */
 static const int32_t kl_table_int[16] DRAM_ATTR = { 0, 18, 24, 27, 30, 32, 33, 35, 36, 37, 38, 39, 39, 40, 41, 42 };
 
 static OPLL_PATCH null_patch = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -430,18 +416,10 @@ static INLINE int max(int i, int j) {
 }
 #endif
 
-/***************************************************
-
-       Internal Sample Rate Converter (Lightweight)
-
-****************************************************/
-/* Memory hogging Sinc-interpolation was replaced with lightweight linear interpolation. */
-
 OPLL_RateConv *OPLL_RateConv_new(float f_inp, float f_out, int ch) {
   OPLL_RateConv *conv = calloc(1, sizeof(OPLL_RateConv));
   conv->ch = ch;
   conv->f_ratio = f_inp / f_out;
-  /* Instead of huge sinc tap arrays, we just keep 2 samples per channel for linear interp */
   conv->buf = malloc(sizeof(void *) * ch);
   for (int i = 0; i < ch; i++) {
     conv->buf[i] = calloc(2, sizeof(int16_t));
@@ -475,13 +453,6 @@ void OPLL_RateConv_delete(OPLL_RateConv *conv) {
   free(conv);
 }
 
-/***************************************************
-
-                  Create tables (Simplified)
-
-****************************************************/
-/* Replaced huge memory allocation logic with runtime calculators */
-
 static void makeDefaultPatch(void) {
   int i, j;
   if (default_patch != NULL) {
@@ -498,11 +469,6 @@ static void initializeTables(void) {
   table_initialized = 1;
 }
 
-/*********************************************************
-
-                      Synthesizing
-
-*********************************************************/
 #define SLOT_BD1 12
 #define SLOT_BD2 13
 #define SLOT_HH 14
@@ -510,7 +476,6 @@ static void initializeTables(void) {
 #define SLOT_TOM 16
 #define SLOT_CYM 17
 
-/* utility macros */
 #define MOD(o, x) (&(o)->slot[(x) << 1])
 #define CAR(o, x) (&(o)->slot[((x) << 1) | 1])
 #define BIT(s, b) (((s) >> (b)) & 1)
@@ -553,7 +518,6 @@ static INLINE void request_update(OPLL_SLOT *slot, int flag) {
   slot->update_requests |= flag;
 }
 
-/* Real-time TLL calculation (Replaces 128KB tll_table) */
 static INLINE uint32_t calc_tll(uint16_t blk_fnum, int TL, int KL) {
   if (KL == 0) return TL2EG(TL);
   int fnum_idx = (blk_fnum >> 5) & 15;
@@ -563,7 +527,6 @@ static INLINE uint32_t calc_tll(uint16_t blk_fnum, int TL, int KL) {
   return (uint32_t)((tmp >> (3 - KL)) * 4 / 3) + TL2EG(TL);
 }
 
-/* Real-time RKS calculation (Replaces rks_table) */
 static INLINE uint8_t calc_rks(uint16_t blk_fnum, uint8_t KR) {
   uint8_t blk_fnum8 = blk_fnum >> 8;
   return KR ? blk_fnum8 : (blk_fnum8 >> 2);
@@ -872,11 +835,9 @@ static INLINE void calc_envelope(OPLL_SLOT *slot, OPLL_SLOT *buddy, uint16_t eg_
     case DAMP:
       if (slot->eg_out >= EG_MAX && (eg_counter & mask) == 0) {
         start_envelope(slot);
-        // slot->type に関わらず、自身の pg_phase をリセット
         if (!slot->pg_keep) {
           slot->pg_phase = 0;
         }
-        // 相方（buddy）が存在すれば、相方の pg_phase も同時にリセット
         if (buddy && !buddy->pg_keep) {
           buddy->pg_phase = 0;
         }
@@ -932,15 +893,14 @@ static INLINE int16_t lookup_exp_table(uint16_t i) {
   return ((i & 0x8000) ? ~res : res) << 1;
 }
 
-/* Synthesize wave on the fly from 1/4th logsin_table (Replaces 4KB Wave Tables) */
 static INLINE uint16_t lookup_wave(uint16_t phase, uint8_t ws) {
-  if (ws == 1 && phase >= (PG_WIDTH / 2)) return 0xfff;  // halfsin
+  if (ws == 1 && phase >= (PG_WIDTH / 2)) return 0xfff;
 
   uint16_t p = phase & (PG_WIDTH / 2 - 1);
-  if (p >= (PG_WIDTH / 4)) p = (PG_WIDTH / 2 - 1) - p;  // Mirroring
+  if (p >= (PG_WIDTH / 4)) p = (PG_WIDTH / 2 - 1) - p;
 
   uint16_t val = logsin_table[p];
-  if (phase >= (PG_WIDTH / 2)) val |= 0x8000;  // Sign inversion
+  if (phase >= (PG_WIDTH / 2)) val |= 0x8000;
   return val;
 }
 
@@ -1080,16 +1040,11 @@ static void OPLL_mix_output(OPLL *opll, int32_t out[2]) {
   out[0] = 0;
   out[1] = 0;
   for (i = 0; i < 14; i++) {
-    if (opll->pan[i] & 2) out[0] += opll->ch_out[i];  // Left
-    if (opll->pan[i] & 1) out[1] += opll->ch_out[i];  // Right
+    if (opll->pan[i] & 2) out[0] += opll->ch_out[i];
+    if (opll->pan[i] & 1) out[1] += opll->ch_out[i];
   }
 }
 
-/*********************************************************
-
-                     External APIs
-
-*********************************************************/
 void OPLL_advance(OPLL *opll) {
   update_ampm(opll);
   update_noise(opll, 1);
@@ -1154,7 +1109,6 @@ void OPLL_writeReg(OPLL *opll, uint32_t reg, uint8_t val) {
         p->EG = (val >> 5) & 1;
         p->KR = (val >> 4) & 1;
         p->ML = val & 15;
-        //if (p->ML > 4) p->ML = 4;
         break;
       case 0x01:
         c->AM = (val >> 7) & 1;
@@ -1162,7 +1116,6 @@ void OPLL_writeReg(OPLL *opll, uint32_t reg, uint8_t val) {
         c->EG = (val >> 5) & 1;
         c->KR = (val >> 4) & 1;
         c->ML = val & 15;
-        //if (c->ML > 4) c->ML = 4;
         break;
       case 0x02:
         p->KL = (val >> 6) & 3;
@@ -1199,14 +1152,12 @@ void OPLL_writeReg(OPLL *opll, uint32_t reg, uint8_t val) {
     return;
   }
 
-  // F-Number Low
   if (0x10 <= reg && reg <= 0x18) {
     ch = reg - 0x10;
     set_fnumber(opll, ch, (opll->reg[0x20 + ch] & 1) << 8 | val);
     return;
   }
 
-  // Block / F-Number High / KeyOn / Sustain
   if (0x20 <= reg && reg <= 0x28) {
     ch = reg - 0x20;
     set_fnumber(opll, ch, (val & 1) << 8 | opll->reg[0x10 + ch]);
@@ -1251,12 +1202,12 @@ OPLL *OPLL_new(uint32_t clk, uint32_t rate) {
 
   uint32_t internal_hz = clk / 72;
   if (rate != internal_hz) {
-    uint32_t mult = (internal_hz + rate / 2) / rate;  // 四捨五入
+    uint32_t mult = (internal_hz + rate / 2) / rate;
     opll->phase_mult = (uint8_t)(mult < 1 ? 1 : (mult > 8 ? 8 : mult));
   } else {
     opll->phase_mult = 1;
   }
- 
+
   OPLL_reset(opll);
   return opll;
 }
@@ -1387,9 +1338,9 @@ void OPLL_setPan(OPLL *opll, uint32_t ch, uint8_t pan) {
 
 void OPLL_setPanFine(OPLL *opll, uint32_t ch, float pan[2]) {
   if (ch < 16) {
-    if (pan[0] == 0.0f) opll->pan[ch] = 1;       // Right Only
-    else if (pan[1] == 0.0f) opll->pan[ch] = 2;  // Left Only
-    else opll->pan[ch] = 3;                      // Center
+    if (pan[0] == 0.0f) opll->pan[ch] = 1;
+    else if (pan[1] == 0.0f) opll->pan[ch] = 2;
+    else opll->pan[ch] = 3;
   }
 }
 

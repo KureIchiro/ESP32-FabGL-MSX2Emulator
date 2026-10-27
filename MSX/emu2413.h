@@ -11,55 +11,44 @@ extern "C" {
 
 enum OPLL_TONE_ENUM { OPLL_2413_TONE = 0, OPLL_VRC7_TONE = 1, OPLL_281B_TONE = 2 };
 
-/* voice data */
 typedef struct __OPLL_PATCH {
   uint32_t TL, FB, EG, ML, AR, DR, SL, RR, KR, KL, AM, PM, WS;
 } OPLL_PATCH;
 
-/* slot */
 typedef struct __OPLL_SLOT {
   uint8_t number;
 
-  /* type flags:
-   * 000000SM
-   *       |+-- M: 0:modulator 1:carrier
-   *       +--- S: 0:normal 1:single slot mode (sd, tom, hh or cym)
-   */
   uint8_t type;
 
-  OPLL_PATCH *patch; /* voice parameter */
+  OPLL_PATCH *patch;
 
-  /* slot output */
-  int32_t output[2]; /* output value, latest and previous. */
+  int32_t output[2];
 
-  /* phase generator (pg) */
-  uint32_t pg_phase;    /* pg phase */
-  uint32_t pg_out;      /* pg output, as index of wave table */
-  uint8_t pg_keep;      /* if 1, pg_phase is preserved when key-on */
-  uint16_t blk_fnum;    /* (block << 9) | f-number */
-  uint16_t fnum;        /* f-number (9 bits) */
-  uint8_t blk;          /* block (3 bits) */
+  uint32_t pg_phase;
+  uint32_t pg_out;
+  uint8_t pg_keep;
+  uint16_t blk_fnum;
+  uint16_t fnum;
+  uint8_t blk;
 
-  /* envelope generator (eg) */
-  uint8_t eg_state;  /* current state */
-  int32_t volume;    /* current volume */
-  uint8_t key_flag;  /* key-on flag 1:on 0:off */
-  uint8_t sus_flag;  /* key-sus option 1:on 0:off */
-  uint16_t tll;      /* total level + key scale level*/
-  uint8_t rks;       /* key scale offset (rks) for eg speed */
-  uint8_t eg_rate_h; /* eg speed rate high 4bits */
-  uint8_t eg_rate_l; /* eg speed rate low 2bits */
-  uint32_t eg_shift; /* shift for eg global counter, controls envelope speed */
-  uint32_t eg_out;   /* eg output */
+  uint8_t eg_state;
+  int32_t volume;
+  uint8_t key_flag;
+  uint8_t sus_flag;
+  uint16_t tll;
+  uint8_t rks;
+  uint8_t eg_rate_h;
+  uint8_t eg_rate_l;
+  uint32_t eg_shift;
+  uint32_t eg_out;
 
-  uint32_t update_requests; /* flags to debounce update */
+  uint32_t update_requests;
 
 #if OPLL_DEBUG
   uint8_t last_eg_state;
 #endif
 } OPLL_SLOT;
 
-/* mask */
 #define OPLL_MASK_CH(x) (1 << (x))
 #define OPLL_MASK_HH (1 << (9))
 #define OPLL_MASK_CYM (1 << (10))
@@ -68,7 +57,6 @@ typedef struct __OPLL_SLOT {
 #define OPLL_MASK_BD (1 << (13))
 #define OPLL_MASK_RHYTHM (OPLL_MASK_HH | OPLL_MASK_CYM | OPLL_MASK_TOM | OPLL_MASK_SD | OPLL_MASK_BD)
 
-/* rate converter */
 typedef struct __OPLL_RateConv {
   int ch;
   float timer;
@@ -108,8 +96,6 @@ typedef struct __OPLL {
   float pan_fine[16][2];
   uint32_t mask;
 
-  /* channel output */
-  /* 0..8:tone 9:bd 10:hh 11:sd 12:tom 13:cym */
   int16_t ch_out[14];
 
   int16_t mix_out[2];
@@ -123,74 +109,38 @@ void OPLL_delete(OPLL *);
 void OPLL_reset(OPLL *);
 void OPLL_resetPatch(OPLL *, uint8_t);
 
-/**
- * Set output wave sampling rate.
- */
 void OPLL_setRate(OPLL *opll, uint32_t rate);
 
-/**
- * Set internal calcuration quality. (Deprecated)
- */
 void OPLL_setQuality(OPLL *opll, uint8_t q);
 
-/**
- * Set pan pot (extra function - not YM2413 chip feature)
- */
 void OPLL_setPan(OPLL *opll, uint32_t ch, uint8_t pan);
 
-/**
- * Set fine-grained panning
- */
 void OPLL_setPanFine(OPLL *opll, uint32_t ch, float pan[2]);
 
-/**
- * Set chip type. 0:YM2413 1:VRC7
- */
 void OPLL_setChipType(OPLL *opll, uint8_t type);
 
 void OPLL_writeIO(OPLL *opll, uint32_t reg, uint8_t val);
 void OPLL_writeReg(OPLL *opll, uint32_t reg, uint8_t val);
 
-/**
- * Advance internal state by one 49716Hz tick WITHOUT computing audio output.
- * Call this 2x before OPLL_calc() to step the chip at 49716Hz while only
- * synthesizing audio once per 16384Hz output sample.
- */
 void OPLL_advance(OPLL *opll);
 
-/**
- * Calculate one sample
- */
 int16_t OPLL_calc(OPLL *opll);
 
-/**
- * Calulate stereo sample
- */
 void OPLL_calcStereo(OPLL *opll, int32_t out[2]);
 
 void OPLL_setPatch(OPLL *, const uint8_t *dump);
 void OPLL_copyPatch(OPLL *, int32_t, OPLL_PATCH *);
 
-/**
- * Force to refresh.
- */
 void OPLL_forceRefresh(OPLL *);
 
 void OPLL_dumpToPatch(const uint8_t *dump, OPLL_PATCH *patch);
 void OPLL_patchToDump(const OPLL_PATCH *patch, uint8_t *dump);
 void OPLL_getDefaultPatch(int32_t type, int32_t num, OPLL_PATCH *);
 
-/**
- *  Set channel mask
- */
 uint32_t OPLL_setMask(OPLL *, uint32_t mask);
 
-/**
- * Toggler channel mask flag
- */
 uint32_t OPLL_toggleMask(OPLL *, uint32_t mask);
 
-/* for compatibility */
 #define OPLL_set_rate OPLL_setRate
 #define OPLL_set_quality OPLL_setQuality
 #define OPLL_set_pan OPLL_setPan
