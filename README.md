@@ -1,13 +1,6 @@
 # ESP32-FabGL-MSX Emulator (MSX1 / MSX2+)
 
-## Demonstration
-
-[![MSX Emulator on ESP32 - GRADIUS](https://img.youtube.com/vi/d_9KP-l-2iU/0.jpg)](https://www.youtube.com/watch?v=d_9KP-l-2iU)
-
-*MSX1エミュレータ（SCCサウンド対応）で『グラディウス』を動作させている様子をYouTubeでご覧いただけます。*
-*Watch GRADIUS running on the MSX1 emulator (with SCC sound) on YouTube.*
-
-[日本語](#japanese) / [English](#english)
+## 概要
 
 ---
 
@@ -49,7 +42,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
    - **PSRAM**: "Enabled" (必須)
    - **Partition Scheme**: MSX1 は "Default 4MB with SPIFFS" 等、MSX2 は "Huge APP" 等
 
-PSRAMを無効にすると約30%高速化するという情報もありますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。PSRAMは有効にしてご使用ください。
+PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約30%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
 
 ### 免責事項・注意事項
 
@@ -379,7 +372,7 @@ The boot menu and the file selector are shared by both. F12, F8, and F6 work on 
    - **PSRAM**: "Enabled" (Required)
    - **Partition Scheme**: MSX1: "Default 4MB with SPIFFS" or similar, MSX2: "Huge APP" or similar
 
-Disabling PSRAM is sometimes reported to improve performance by about 30%, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no particular practical benefit. Keep PSRAM enabled when using this project.
+If PSRAM is disabled, software errata countermeasures become invalid, resulting in about 30% faster performance, but since this project achieves 60 FPS even with PSRAM enabled, there is no particular practical benefit from disabling it. Keep PSRAM enabled when using this project.
 
 ### Important Notes & License
 
