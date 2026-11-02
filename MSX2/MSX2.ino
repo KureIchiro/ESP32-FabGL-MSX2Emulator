@@ -14,7 +14,7 @@
  *  - Library: FabGL v1.0.9
  *
  * [ Recommended Arduino IDE Settings ]
- *  - PSRAM: "Enabled"
+ *  - PSRAM: "Enabled" (required on ESP32 revision 0-2. On revision 3 or later "Disabled" also works and is ~30% faster; see README)
  *  - Partition Scheme: "Huge APP" or similar
  *  - ESP32 Dev Module
  *
@@ -53,7 +53,7 @@
  *   (K) コナミ(SCCあり/なし両用)  (KS) コナミSCC(実機どおりのアドレスのみ。メタルギア2など)
  *  実行中: F12 一時停止 / Shift+F12 リセット / 一時停止中に F10・F11 でドライブ1・2のディスク
  *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす / Shift+F8 スプライトの横の枚数制限なし・あり /
- *   F6 Z80 の速さ Normal(228) → High(300) → Super(372)(1ラインのクロック数。画面下に0.5秒表示)
+ *   F6 Z80 の速さ Normal(205) → High(285) → Super(365)(1ラインのクロック数。画面下に0.5秒表示)
  *   ※ドライブ2は起動メニューで DiskB を選んで起動したときだけつながる(実機の HB-F1XDJ と
  *     同じく、選ばなければ1ドライブで、B: は A: を使う仮想ドライブになる)
  */
@@ -68,6 +68,16 @@
 #include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
+#ifndef BOARD_HAS_PSRAM
+#include "esp32/spiram.h"
+#include "esp_heap_caps.h"
+#define ps_malloc(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#endif
+#if defined(BOARD_HAS_PSRAM) && !defined(EMU_PSRAM_NO_ERRATA_FIX)
+#define psramFixMissing() false
+#else
+#define psramFixMissing() (ESP.getChipRevision() < 3)
+#endif
 #include "msx2.h"
 #include "v9958.h"
 #include "wd2793.h"
@@ -86,12 +96,15 @@
 
 #define SD_SCLK 14
 #define SD_MISO 2
+//#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
 #define SD_CS 13
 
 #define MSX2_FULLHD 0
 #define MSX2_WIDE_MONITOR 0
-#if MSX2_WIDE_MONITOR
+#if MSX2_WIDE_MONITOR == 2
+  #define MSX2_MODELINE_VGA "\"512x212@60Hz\" 25.175 512 592 688 800 212 231 232 262 -HSync -VSync DoubleScan"
+#elif MSX2_WIDE_MONITOR == 1
   #define MSX2_MODELINE_VGA "\"512x212@60Hz\" 30.46 512 664 780 968 212 231 232 262 -HSync -VSync DoubleScan"
 #else
   #define MSX2_MODELINE_VGA "\"512x212@60Hz\" 22.78 512 560 648 724 212 231 232 262 -HSync -VSync DoubleScan"
@@ -886,9 +899,39 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
 static volatile bool isPaused = false;
 static volatile bool frameReady = false;
 
-static const int CPU_SPEEDS[3] = { 228, 300, 372 };
+static const int CPU_SPEEDS[3] = { 205, 285, 365 };
 static const char *const CPU_SPEED_NAMES[3] = { "CPU: Normal", "CPU: High", "CPU: Super" };
 static int cpuSpeed = 0;
+
+static uint8_t kbdKept[32];
+static int kbdKeptHead = 0, kbdKeptCount = 0;
+static bool kbdLedByte(uint8_t b) {
+  fabgl::PS2Controller::sendData(b, 0);
+  for (uint32_t t0 = millis(); millis() - t0 < 500; ) {
+    int r = fabgl::PS2Controller::getData(0, 10);
+    if (r == 0xFA) return true;
+    if (r >= 0 && r != 0xFE && kbdKeptCount < (int)sizeof(kbdKept)) kbdKept[(kbdKeptHead + kbdKeptCount++) % sizeof(kbdKept)] = (uint8_t)r;
+  }
+  return false;
+}
+static void kbdSetLeds(bool capsLock, bool scrollLock) {
+  fabgl::PS2Controller::lock(0, -1);
+  {
+    fabgl::PS2PortAutoDisableRX mouseOff(1);
+    if (kbdLedByte(0xED)) kbdLedByte((scrollLock ? 1 : 0) | (capsLock ? 4 : 0));
+  }
+  fabgl::PS2Controller::unlock(0);
+}
+static int kbdAvailable(fabgl::Keyboard *kb) { return kbdKeptCount + kb->scancodeAvailable(); }
+static int kbdNextScancode(fabgl::Keyboard *kb) {
+  if (kbdKeptCount > 0) {
+    uint8_t b = kbdKept[kbdKeptHead];
+    kbdKeptHead = (kbdKeptHead + 1) % (int)sizeof(kbdKept);
+    kbdKeptCount--;
+    return b;
+  }
+  return kb->getNextScancode(0);
+}
 
 static void updateKeyboard() {
   static bool isBreak = false, isE0 = false, isShift = false;
@@ -898,11 +941,11 @@ static void updateKeyboard() {
   {
     static uint8_t ledShown = 0xFF;
     const uint8_t led = msx2Leds();
-    if (led != ledShown) { ledShown = led; kb->setLEDs(false, (led & 1) != 0, (led & 2) != 0); }
+    if (led != ledShown) { ledShown = led; kbdSetLeds((led & 1) != 0, (led & 2) != 0); }
   }
-  int count = kb->scancodeAvailable();
+  int count = kbdAvailable(kb);
   while (count-- > 0) {
-    int sc = kb->getNextScancode(0);
+    int sc = kbdNextScancode(kb);
     if (sc == -1) break;
     if (sc == 0xF0) { isBreak = true; continue; }
     if (sc == 0xE0) { isE0 = true; continue; }
@@ -963,12 +1006,14 @@ static void updateKeyboard() {
   }
 }
 
-static void updateController() {
-  uint8_t j1 = 0x7F, j2 = 0x7F;
+static void updateController(bool hold) {
+  static uint8_t last1 = 0x7F, last2 = 0x7F;
+  uint8_t j1 = hold ? last1 : 0x7F, j2 = hold ? last2 : 0x7F;
   while (Serial1.available() > 0) {
     uint8_t b = Serial1.read();
     if (b & 0x80) j2 = b & 0x7F; else j1 = b & 0x7F;
   }
+  last1 = j1; last2 = j2;
   msx2_joy[0] = 0x40 | ((mousePortSel == 1 ? 0x7F : j1) & 0x3F);
   msx2_joy[1] = 0x40 | ((mousePortSel == 2 ? 0x7F : j2) & 0x3F);
 }
@@ -976,6 +1021,7 @@ static void updateController() {
 void IRAM_ATTR cpuTask(void *) {
   const int64_t frameUs = 16683;
   int64_t next = esp_timer_get_time();
+  bool noWait = false, prevNoWait = false;
 #ifdef MSX2_PERF_LOG
   uint32_t sum = 0, mx = 0, over = 0, n = 0;
 #if MSX2_PROFILE
@@ -989,6 +1035,8 @@ void IRAM_ATTR cpuTask(void *) {
       next = esp_timer_get_time();
       continue;
     }
+    updateController(prevNoWait);
+    prevNoWait = noWait;
     next += frameUs;
     int64_t t0 = esp_timer_get_time();
     msx2RunFrame();
@@ -1025,6 +1073,7 @@ void IRAM_ATTR cpuTask(void *) {
 #endif
 #endif
     int64_t wait = next - now;
+    noWait = wait <= 0;
     if (wait > 0) {
       if (wait >= 1000) vTaskDelay(pdMS_TO_TICKS(wait / 1000));
       while (esp_timer_get_time() < next) asm volatile("nop");
@@ -1041,8 +1090,22 @@ static void haltWithMessage(const char *msg) {
   while (1) delay(1000);
 }
 
+#ifndef BOARD_HAS_PSRAM
+bool psramEnable() {
+  if (esp_spiram_init() != ESP_OK) return false;
+  esp_spiram_init_cache();
+  if (!esp_spiram_test()) return false;
+  if (esp_spiram_add_to_heapalloc() != ESP_OK) return false;
+  heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
+  return true;
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
+#ifndef BOARD_HAS_PSRAM
+  Serial.printf("PSRAM: %s\n", psramEnable() ? "enabled by the sketch" : "init FAILED");
+#endif
   WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(240);
   disableCore0WDT();
@@ -1089,7 +1152,16 @@ void setup() {
                 DisplayController.getViewPortWidth(), DisplayController.getViewPortHeight(),
                 vpRow[0], (int)(vpRow[1] - vpRow[0]), sync);
   uiFillRect(0, 0, MSX2_SCREEN_W - 1, MSX2_SCREEN_H - 1, UI_BLACK);
-  scratchRow = (uint8_t *)heap_caps_malloc(MSX2_SCREEN_W, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
+  if (psramFixMissing()) {
+    Serial.printf("ESP32 revision %d needs the PSRAM errata fix: set Tools > PSRAM to \"Enabled\" and build again\n", ESP.getChipRevision());
+    char msg[48];
+    snprintf(msg, sizeof(msg), "ESP32 REV.%d NEEDS THE PSRAM BUG FIX", ESP.getChipRevision());
+    uiFillRect(0, 0, MSX2_SCREEN_W - 1, MSX2_SCREEN_H - 1, UI_BLUE);
+    uiText(16, 80, msg, UI_WHITE, UI_BLUE);
+    uiText(16, 96, "ARDUINO IDE: TOOLS > PSRAM > \"Enabled\", THEN BUILD AGAIN", UI_WHITE, UI_BLUE);
+    while (1) delay(1000);
+  }
+  scratchRow =(uint8_t *)heap_caps_malloc(MSX2_SCREEN_W, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
 
   int internalSegs = 0;
   for (int i = 0; i < MSX2_MAPPER_SEGMENTS; i++) {
@@ -1279,7 +1351,6 @@ static void updateAllSound() {
 void loop() {
   if (frameReady) {
     frameReady = false;
-    updateController();
     updateKeyboard();
     updateMouse();
     saveFmPacSramIfChanged();

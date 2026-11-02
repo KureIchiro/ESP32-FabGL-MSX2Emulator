@@ -55,6 +55,10 @@ static int      stepDir = -1;
 static uint8_t  idField[6], idSector = 1;
 static bool     seeking;
 static uint32_t seekEnd;
+static const uint32_t LOST_LINES = 8;
+static uint32_t lastXfer;
+static bool     lost;
+static uint32_t lostEnd;
 
 void wd2793Reset() {
   mode = M_IDLE;
@@ -63,6 +67,7 @@ void wd2793Reset() {
   multiSector = intrq = intrqHold = headLoaded = false;
   dataIndex = dataLen = 0; stepDir = -1;
   seeking = false;
+  lost = false;
 }
 
 static void seekPoll() {
@@ -201,6 +206,8 @@ static void command(uint8_t cmd) {
   intrq = intrqHold = false;
   dataIndex = 0;
   seeking = false;
+  lost = false;
+  lastXfer = msx2LineClock();
 
   if ((cmd & 0xF0) == 0xD0) {
     mode = M_IDLE;
@@ -254,6 +261,21 @@ static void finish(uint8_t err) {
   mode = M_IDLE;
   regStatus = err;
   intrq = true;
+  lost = false;
+}
+
+static void lostPoll() {
+  if (mode != M_READ && mode != M_WRITE && mode != M_WRITETRACK) return;
+  const uint32_t now = msx2LineClock();
+  if (!lost) {
+    if (dataIndex >= dataLen || (int32_t)(now - lastXfer) < (int32_t)LOST_LINES) return;
+    const uint32_t rest = (uint32_t)(dataLen - dataIndex + 1) / 2;
+    lost = true;
+    regStatus |= 0x04;
+    lostEnd = lastXfer + (rest > LOST_LINES ? rest : LOST_LINES);
+    dataIndex = dataLen;
+  }
+  if ((int32_t)(now - lostEnd) >= 0) finish(0x04);
 }
 
 static uint8_t status() {
@@ -285,9 +307,10 @@ static uint8_t readData() {
     if (dataIndex >= 6) { regSector = idField[0]; finish(0); }
     return v;
   }
-  if (mode != M_READ || !sectorPtr) return regData;
+  if (mode != M_READ || !sectorPtr || dataIndex >= dataLen) return regData;
   uint8_t v = sectorPtr[dataIndex++];
   regData = v;
+  lastXfer = msx2LineClock();
   if (dataIndex >= 512) {
     if (multiSector) {
       regSector++;
@@ -303,6 +326,8 @@ static uint8_t readData() {
 
 static void writeData(uint8_t v) {
   regData = v;
+  if ((mode == M_WRITE || mode == M_WRITETRACK) && dataIndex >= dataLen) return;
+  lastXfer = msx2LineClock();
   if (mode == M_WRITETRACK) {
     if (++dataIndex >= TRACK_BYTES) {
       Disk *k = selected();
@@ -330,6 +355,7 @@ static void writeData(uint8_t v) {
 
 uint8_t msx2FdcRead(int r) {
   seekPoll();
+  lostPoll();
   switch (r & 7) {
     case 0: return status();
     case 1: return regTrack;
@@ -357,6 +383,7 @@ void (*wd2793CmdHook)(uint8_t cmd, uint8_t track, uint8_t sector, uint8_t side, 
 
 void msx2FdcWrite(int r, uint8_t v) {
   seekPoll();
+  lostPoll();
   switch (r & 7) {
     case 0:
       command(v);

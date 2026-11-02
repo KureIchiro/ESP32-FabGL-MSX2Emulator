@@ -15,7 +15,7 @@
  *  - Library: FabGL v1.0.9
  *
  * [ Recommended Arduino IDE Settings ]
- *  - PSRAM: "Enabled"
+ *  - PSRAM: "Enabled" (required on ESP32 revision 0-2. On revision 3 or later "Disabled" also works and is ~30% faster; see README)
  *  - Partition Scheme: "Default 4MB with SPIFFS" or similar
  *  - ESP32 Dev Module
  *
@@ -49,7 +49,7 @@
  *  - 使用ライブラリ: FabGL v1.0.9
  *
  * 【Arduino IDE 推奨設定】
- *  - PSRAM: "Enabled"
+ *  - PSRAM: "Enabled"(ESP32 のリビジョン 0〜2 では必須。リビジョン 3 以降なら "Disabled" でもよく、約 3 割速い。README 参照)
  *  - Partition Scheme: "Default 4MB with SPIFFS" 等
  *  - ESP32 Dev Module
  *
@@ -79,6 +79,16 @@
 #include <WiFi.h>
 #include "soc/rtc_wdt.h"
 #include "esp_task_wdt.h"
+#ifndef BOARD_HAS_PSRAM
+#include "esp32/spiram.h"
+#include "esp_heap_caps.h"
+#define ps_malloc(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#endif
+#if defined(BOARD_HAS_PSRAM) && !defined(EMU_PSRAM_NO_ERRATA_FIX)
+#define psramFixMissing() false
+#else
+#define psramFixMissing() (ESP.getChipRevision() < 3)
+#endif
 #include "tms9918a.h"
 #include "Z80.h"
 #include "KeyboardSystem.hpp"
@@ -114,6 +124,7 @@ Cart carts[3];
 
 #define SD_SCLK 14
 #define SD_MISO 2
+//#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
 #define SD_CS 13
 
@@ -189,11 +200,6 @@ uint8_t* psram_slots[5] = { NULL, NULL, NULL, NULL, NULL };
 const size_t SAVE_BUFFER_SIZE = 100 * 1024;
 StateSaveData tempState;
 bool isPaused = false;
-static const int CPU_SPEEDS[3] = { 228, 300, 372 };
-static const char *const CPU_SPEED_NAMES[3] = { "CPU: Normal", "CPU: High", "CPU: Super" };
-static int cpuSpeed = 0;
-static volatile int cpuCyclesPerLine = CPU_SPEEDS[0];
-static uint32_t statusClearAt;
 enum class SaveMode { NONE,
                       GAME_TO_PSRAM,
                       PSRAM_TO_GAME,
@@ -1100,24 +1106,16 @@ inline void IRAM_ATTR writeIO(void* context, int port, int val) {
 }
 
 void clearStatus() {
-  statusClearAt = 0;
   uiFillRect(48, 192, 303, 199, UI_BLACK);
 }
 
 void flashStatus(const char* msg, int waitMs = 0) {
-  statusClearAt = 0;
   clearStatus();
   uiText(48, 192, msg, UI_WHITE, UI_BLACK);
   if (waitMs > 0) {
     delay(waitMs);
     clearStatus();
   }
-}
-
-static void timedStatus(const char* msg, int ms) {
-  flashStatus(msg);
-  statusClearAt = millis() + ms;
-  if (!statusClearAt) statusClearAt = 1;
 }
 
 void initSaveSystem() {
@@ -1685,6 +1683,35 @@ static uint8_t msxLeds() {
   if (psg_regs[15] & 0x80) kanaManaged = true;
   return (!(ppi_c & 0x40) ? 1 : 0) | ((kanaManaged && !(psg_regs[15] & 0x80)) ? 2 : 0);
 }
+static uint8_t kbdKept[32];
+static int kbdKeptHead = 0, kbdKeptCount = 0;
+static bool kbdLedByte(uint8_t b) {
+  fabgl::PS2Controller::sendData(b, 0);
+  for (uint32_t t0 = millis(); millis() - t0 < 500; ) {
+    int r = fabgl::PS2Controller::getData(0, 10);
+    if (r == 0xFA) return true;
+    if (r >= 0 && r != 0xFE && kbdKeptCount < (int)sizeof(kbdKept)) kbdKept[(kbdKeptHead + kbdKeptCount++) % sizeof(kbdKept)] = (uint8_t)r;
+  }
+  return false;
+}
+static void kbdSetLeds(bool capsLock, bool scrollLock) {
+  fabgl::PS2Controller::lock(0, -1);
+  {
+    fabgl::PS2PortAutoDisableRX mouseOff(1);
+    if (kbdLedByte(0xED)) kbdLedByte((scrollLock ? 1 : 0) | (capsLock ? 4 : 0));
+  }
+  fabgl::PS2Controller::unlock(0);
+}
+static int kbdAvailable(fabgl::Keyboard *kb) { return kbdKeptCount + kb->scancodeAvailable(); }
+static int kbdNextScancode(fabgl::Keyboard *kb) {
+  if (kbdKeptCount > 0) {
+    uint8_t b = kbdKept[kbdKeptHead];
+    kbdKeptHead = (kbdKeptHead + 1) % (int)sizeof(kbdKept);
+    kbdKeptCount--;
+    return b;
+  }
+  return kb->getNextScancode(0);
+}
 void updateKeyboard() {
   static bool isBreak = false;
   static bool isE0 = false;
@@ -1702,12 +1729,13 @@ void updateKeyboard() {
   {
     static uint8_t ledShown = 0xFF;
     const uint8_t led = msxLeds();
-    if (led != ledShown) { ledShown = led; kb->setLEDs(false, (led & 1) != 0, (led & 2) != 0); }
-  }  int count = kb->scancodeAvailable();
+    if (led != ledShown) { ledShown = led; kbdSetLeds((led & 1) != 0, (led & 2) != 0); }
+  }
+  int count = kbdAvailable(kb);
   if (count <= 0) return;
 
   while (count--) {
-    int sc = kb->getNextScancode(0);
+    int sc = kbdNextScancode(kb);
     if (sc == -1) break;
     if (sc == 0xF0) {
       isBreak = true;
@@ -1758,12 +1786,12 @@ void updateKeyboard() {
       }
     }
 
-    if (sc == 0x0B && !isE0) {
+    if (sc == 0x0B) {
       if (!isBreak && !f6_held) {
         f6_held = true;
-        cpuSpeed = (cpuSpeed + 1) % 3;
-        cpuCyclesPerLine = CPU_SPEEDS[cpuSpeed];
-        timedStatus(CPU_SPEED_NAMES[cpuSpeed], 500);
+        if (isShift) {
+        } else {
+        }
       } else if (isBreak) f6_held = false;
     } else if (sc == 0x83) {
       if (!isBreak && !f7_held) {
@@ -1879,16 +1907,19 @@ void updateKeyboard() {
   }
 }
 
-void IRAM_ATTR updateController() {
-  uint8_t j1 = 0x7F, j2 = 0x7F;
+static volatile uint8_t joyKeyState = 0x7F;
+void IRAM_ATTR updateController(bool hold) {
+  static uint8_t last1 = 0x7F, last2 = 0x7F;
+  uint8_t j1 = hold ? last1 : 0x7F, j2 = hold ? last2 : 0x7F;
   while (Serial1.available() > 0) {
-    joy_bits = Serial1.read();
-    if (joy_bits & 0x80) j2 = joy_bits & 0x7F;
-    else j1 = joy_bits & 0x7F;
+    const uint8_t b = Serial1.read();
+    if (b & 0x80) j2 = b & 0x7F;
+    else j1 = b & 0x7F;
   }
+  last1 = j1; last2 = j2;
   joy_bits1 = (mousePort == 1 ? 0x7F : j1) & 0x3F;
   joy_bits2 = (mousePort == 2 ? 0x7F : j2) & 0x3F;
-  joyKeysApply(mousePort == 2 ? j2 : j1, mousePort != 0, msx_key_matrix);
+  joyKeyState = mousePort == 2 ? j2 : j1;
 }
 
 MapperType detectMapper(const char* filename, uint32_t size) {
@@ -2052,11 +2083,15 @@ static void updateMouse() {
   }
 }
 
+#define CPU_CYCLE_M1WAIT 205
+#define CPU_CYCLE_NOWAIT 228
+
 void IRAM_ATTR cpuTask(void* pvParameters) {
   const int64_t frameTimeUs = 16684;
   int64_t nextFrameTime = esp_timer_get_time();
   int64_t now;
   int64_t waitTime;
+  bool noWait = false, prevNoWait = false;
 
   while (1) {
     if (isPaused) {
@@ -2065,11 +2100,13 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       continue;
     }
 
+    updateController(prevNoWait);
+    prevNoWait = noWait;
     nextFrameTime += frameTimeUs;
 
     for (int i = 0; i < 262; ++i) {
       fdcLines++;
-      ExecZ80(&cpu, cpuCyclesPerLine);
+      ExecZ80(&cpu, CPU_CYCLE_M1WAIT);
       if (i == 192) {
         frameReady = true;
       }
@@ -2079,6 +2116,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     }
     now = esp_timer_get_time();
     waitTime = nextFrameTime - now;
+    noWait = waitTime <= 0;
 
     if (waitTime > 0) {
       if (waitTime >= 1000) {
@@ -2091,8 +2129,22 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
   }
 }
 
+#ifndef BOARD_HAS_PSRAM
+bool psramEnable() {
+  if (esp_spiram_init() != ESP_OK) return false;
+  esp_spiram_init_cache();
+  if (!esp_spiram_test()) return false;
+  if (esp_spiram_add_to_heapalloc() != ESP_OK) return false;
+  heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
+  return true;
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
+#ifndef BOARD_HAS_PSRAM
+  Serial.printf("PSRAM: %s\n", psramEnable() ? "enabled by the sketch" : "init FAILED");
+#endif
   WiFi.mode(WIFI_OFF);
   setCpuFrequencyMhz(240);
   disableCore0WDT();
@@ -2136,6 +2188,16 @@ void setup() {
     uint8_t rawBlack = DisplayController.createRawPixel(fabgl::RGB222(0, 0, 0));
     Serial.printf("VIEWPORT: row0=%p row1=%p stride=%d rawBlack=%02X (expected C0)\n",
                   vpRow[0], vpRow[1], (int)(vpRow[1] - vpRow[0]), rawBlack);
+  }
+  if (psramFixMissing()) {
+    Serial.printf("ESP32 revision %d needs the PSRAM errata fix: set Tools > PSRAM to \"Enabled\" and build again\n", ESP.getChipRevision());
+    char msg[48];
+    snprintf(msg, sizeof(msg), "ESP32 REV.%d NEEDS THE PSRAM BUG FIX", ESP.getChipRevision());
+    uiFillRect(0, 0, 319, 199, UI_BLUE);
+    uiText(8, 80, msg, UI_WHITE, UI_BLUE);
+    uiText(8, 96, "TOOLS > PSRAM > \"Enabled\",", UI_WHITE, UI_BLUE);
+    uiText(8, 112, "THEN BUILD AGAIN", UI_WHITE, UI_BLUE);
+    while (1) delay(1000);
   }
 
   slot_mem[0] = (uint8_t*)heap_caps_malloc(0x8000, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
@@ -2338,10 +2400,6 @@ void updateAllSound() {
 }
 
 void loop() {
-  if (statusClearAt && (int32_t)(millis() - statusClearAt) >= 0) {
-    statusClearAt = 0;
-    clearStatus();
-  }
   if (frameReady) {
     frameReady = false;
     if (!isPaused) {
@@ -2350,7 +2408,7 @@ void loop() {
       if (displayMode == DisplayMode::GAME) presentGameFrame();
     }
     updateAllSound();
-    updateController();
+    joyKeysApply(joyKeyState, mousePort != 0, msx_key_matrix);
     updateKeyboard();
     updateMouse();
     saveFmPacSramIfChanged();

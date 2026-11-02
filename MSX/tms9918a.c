@@ -5,6 +5,10 @@
 #include <esp_attr.h>
 #include <string.h>
 #include "tms9918a.h"
+#ifndef BOARD_HAS_PSRAM
+#include <esp_heap_caps.h>
+#define ps_malloc(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#endif
 
 #if defined(__GNUC__)
 #define TMS_INLINE static inline __attribute__((always_inline))

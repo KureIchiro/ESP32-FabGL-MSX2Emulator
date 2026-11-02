@@ -49,6 +49,8 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
    - **PSRAM**: "Enabled" (必須)
    - **Partition Scheme**: MSX1 は "Default 4MB with SPIFFS" 等、MSX2 は "Huge APP" 等
 
+PSRAMを無効にすると約30%高速化するという情報もありますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。PSRAMは有効にしてご使用ください。
+
 ### 免責事項・注意事項
 
 - 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License)、岡崎光考氏 (emu2413) の各ポリシーに従います。
@@ -376,6 +378,8 @@ The boot menu and the file selector are shared by both. F12, F8, and F6 work on 
 - **Arduino IDE Settings**:
    - **PSRAM**: "Enabled" (Required)
    - **Partition Scheme**: MSX1: "Default 4MB with SPIFFS" or similar, MSX2: "Huge APP" or similar
+
+Disabling PSRAM is sometimes reported to improve performance by about 30%, but this project already achieves 60 FPS with PSRAM enabled, so disabling it offers no particular practical benefit. Keep PSRAM enabled when using this project.
 
 ### Important Notes & License
 

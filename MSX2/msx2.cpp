@@ -13,7 +13,7 @@
 #include <stdio.h>
 #endif
 
-static int cpuCyclesPerLine = 228;
+static int cpuCyclesPerLine = 205;
 #define CPU_CYCLES_PER_LINE cpuCyclesPerLine
 
 extern "C" {

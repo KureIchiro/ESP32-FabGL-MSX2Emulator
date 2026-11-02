@@ -20,7 +20,6 @@
 #define Z80_TABLE_ATTR DRAM_ATTR
 #endif
 
-/* M1 waits are folded into these tables to avoid a per-opcode addition. */
 static const byte Z80_TABLE_ATTR Cycles[256] =
 {
    5,11, 8, 7, 5, 5, 8, 5, 5,12, 8, 7, 5, 5, 8, 5,
