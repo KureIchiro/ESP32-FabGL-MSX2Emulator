@@ -42,7 +42,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
    - **PSRAM**: "Enabled" (必須)
    - **Partition Scheme**: MSX1 は "Default 4MB with SPIFFS" 等、MSX2 は "Huge APP" 等
 
-PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約30%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
+PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約20%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
 
 ### 免責事項・注意事項
 
@@ -372,7 +372,7 @@ The boot menu and the file selector are shared by both. F12, F8, and F6 work on 
    - **PSRAM**: "Enabled" (Required)
    - **Partition Scheme**: MSX1: "Default 4MB with SPIFFS" or similar, MSX2: "Huge APP" or similar
 
-If PSRAM is disabled, software errata countermeasures become invalid, resulting in about 30% faster performance, but since this project achieves 60 FPS even with PSRAM enabled, there is no particular practical benefit from disabling it. Keep PSRAM enabled when using this project.
+If PSRAM is disabled, software errata countermeasures become invalid, resulting in about 20% faster performance, but since this project achieves 60 FPS even with PSRAM enabled, there is no particular practical benefit from disabling it. Keep PSRAM enabled when using this project.
 
 ### Important Notes & License
 
