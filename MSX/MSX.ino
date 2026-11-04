@@ -124,7 +124,7 @@ Cart carts[3];
 
 #define SD_SCLK 14
 #define SD_MISO 2
-//#define SD_MISO 35  // ORANGE ESPer
+/#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
 #define SD_CS 13
 
@@ -1832,6 +1832,7 @@ void updateKeyboard() {
             handleDiskSelect(0);
             f9_held = isShift = false;
             for (int i = 0; i < 12; i++) msx_key_matrix[i] = 0xFF;
+            keyHostClear();
           } else {
             savePsramToSd(0);
           }
@@ -1898,8 +1899,9 @@ void updateKeyboard() {
     }
 
     if (row >= 0 && row < 12) {
-      if (isBreak) msx_key_matrix[row] |= (1 << bit);
-      else msx_key_matrix[row] &= ~(1 << bit);
+      keyHostSet(sc & 0xFF, isE0, !isBreak);
+      if (!isBreak) msx_key_matrix[row] &= ~(1 << bit);
+      else if (!keyHostAny(res)) msx_key_matrix[row] |= (1 << bit);
     }
 
     isBreak = false;

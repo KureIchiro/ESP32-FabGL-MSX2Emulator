@@ -13,6 +13,24 @@ enum class KeyboardLayout {
 inline uint8_t key_map[256];
 inline uint8_t key_map_e0[256];
 
+inline uint8_t key_host_down[64];
+
+inline void keyHostSet(uint8_t sc, bool e0, bool down) {
+    const int h = (e0 ? 256 : 0) | sc;
+    if (down) key_host_down[h >> 3] |= (uint8_t)(1 << (h & 7));
+    else      key_host_down[h >> 3] &= (uint8_t)~(1 << (h & 7));
+}
+
+inline bool keyHostAny(uint8_t rb) {
+    for (int h = 0; h < 512; h++)
+        if (((key_host_down[h >> 3] >> (h & 7)) & 1) && (h < 256 ? key_map[h] : key_map_e0[h - 256]) == rb) return true;
+    return false;
+}
+
+inline void keyHostClear() {
+    for (int i = 0; i < 64; i++) key_host_down[i] = 0;
+}
+
 void initKeyMap(KeyboardLayout layout);
 void setJapaneseKeyMap();
 void setUSKeyMap();

@@ -96,7 +96,7 @@
 
 #define SD_SCLK 14
 #define SD_MISO 2
-//#define SD_MISO 35  // ORANGE ESPer
+/#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
 #define SD_CS 13
 
@@ -974,6 +974,7 @@ static void updateKeyboard() {
             flashStatus("PAUSED!", 0);
             held = isShift = false;
             for (int r = 0; r < 12; r++) msx2_key_matrix[r] = 0xFF;
+            keyHostClear();
           }
           else saveDisk(d);
         }
@@ -998,8 +999,9 @@ static void updateKeyboard() {
     uint8_t res = isE0 ? key_map_e0[sc & 0xFF] : key_map[sc & 0xFF];
     if (res != 0xFF) { row = res >> 4; bit = res & 0x0F; }
     if (row >= 0 && row < 12 && (!isPaused || isBreak)) {
-      if (isBreak) msx2_key_matrix[row] |= (1 << bit);
-      else msx2_key_matrix[row] &= ~(1 << bit);
+      keyHostSet(sc & 0xFF, isE0, !isBreak);
+      if (!isBreak) msx2_key_matrix[row] &= ~(1 << bit);
+      else if (!keyHostAny(res)) msx2_key_matrix[row] |= (1 << bit);
     }
     isBreak = false;
     isE0 = false;
