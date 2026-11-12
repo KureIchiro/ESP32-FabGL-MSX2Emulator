@@ -1,6 +1,13 @@
 # ESP32-FabGL-MSX Emulator (MSX1 / MSX2+)
 
-## 概要
+## Demonstration
+
+[![MSX Emulator on ESP32 - GRADIUS](https://img.youtube.com/vi/d_9KP-l-2iU/0.jpg)](https://www.youtube.com/watch?v=d_9KP-l-2iU)
+
+*MSX1エミュレータ（SCCサウンド対応）で『グラディウス』を動作させている様子をYouTubeでご覧いただけます。*
+*Watch GRADIUS running on the MSX1 emulator (with SCC sound) on YouTube.*
+
+[日本語](#japanese) / [English](#english)
 
 ---
 
@@ -17,7 +24,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 | `MSX/MSX.ino` | MSX1（TMS9918A） | 320×200 |
 | `MSX2/MSX2.ino` | MSX2+（ソニー HB-F1XDJ 相当、V9958。MSX2のBIOSならV9938として動作） | 512×212 |
 
-起動メニュー、ファイル選択は両方で共通です。F12・F8・F6 は両機種で使えます。ディスクの入れ替えなどは MSX1 と MSX2+ で割り当てが異なります（「5. 操作ガイド」の表を参照）。
+起動メニュー、ファイル選択は両方で共通です。ファンクションキーは F12・F8 が共通で、ディスクの入れ替えなどは MSX1 と MSX2+ で割り当てが違います（「5. 操作ガイド」の表を参照）。
 
 ## 構成プロジェクト
 
@@ -39,10 +46,9 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 - **ESP32 ボードマネージャ**: v2.0.5 (推奨)
 - **使用ライブラリ**: FabGL v1.0.9
 - **Arduino IDE 推奨設定**:
-   - **PSRAM**: "Enabled" (必須)
+   - **PSRAM**（ON = "Enabled"、OFF = "Disabled"）: PSRAMをONにするとソフトでのエラッタ対策が入り、20%程度速度が低下します。PSRAMをOFFにするとソフトでPSRAMを有効にし、ソフトでのエラッタ対策は入りません。但し、ESP32のリビジョンが3以降でないと不具合が発生するため、それ以外のリビジョンでPSRAMをOFFにしても起動しなくしてあります。本プロジェクトではPSRAMをONにしても60FPSを達成している為、OFFにするメリットは明確にはありません。
    - **Partition Scheme**: MSX1 は "Default 4MB with SPIFFS" 等、MSX2 は "Huge APP" 等
-
-PSRAMを無効にするとソフトでのエラッタ対策が無効になるため約20%の高速化になりますが、本プロジェクトではPSRAM有効時でも60FPSを達成しているため、無効化による実用上のメリットは特にありません。
+- **EmuLauncher での機種の切り替え**（使うときだけ）: `EmuLauncher` のフォルダの `emu_switch.h` と `partitions.csv` を、このスケッチのフォルダにコピーします。起動メニューに **Next**（次に起動する機種）が出て、フラッシュの分け方が `partitions.csv` のとおりになります（Partition Scheme の設定は使われません）。2 つのファイルが無ければ、今までどおり単体で動きます。詳しくは `EmuLauncher/README.md` を見てください。
 
 ### 免責事項・注意事項
 
@@ -95,7 +101,7 @@ ESP32の実行リソースが限られているため、実機の完全な再現
 
 ## 3. SDカードの構成とセットアップ
 
-SDカードのルートに、MSX1 は `/MSX1`、MSX2+ は `/MSX2` のフォルダを作り、それぞれの中に以下を置きます（マーク3 は `/SMS`、PC-8801 は `/PC88`、X1 は `/X1` なので、1枚のSDカードに全機種のファイルを入れられます）。
+SDカードのルートに、MSX1 は `/MSX1`、MSX2+ は `/MSX2` のフォルダを作り、それぞれの中に以下を置きます（マーク3 は `/SMS`、PC-8801 は `/PC88`、X1 は `/X1`、MZ-2500 は `/MZ25` なので、1枚のSDカードに全機種のファイルを入れられます）。
 
 ### MSX1
 
@@ -165,9 +171,10 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 |---|---|
 | Slot1 / Slot2 | カートリッジ。/MSX1/ROM・/MSX2/ROM の .rom ファイル、または `<NONE>`（なし）・`<SCC>`（ROMの無いSCCカートリッジ）・`<FM-PAC>`（Slot2のみ。FMPAC.ROM があるとき既定） |
 | Disk BIOS | ディスクBIOSの ON / OFF（DISK.ROM があるとき） |
-| Disk1 / Disk2 | ドライブ1 / 2 に入れるディスクイメージ（.dsk） |
+| DiskA / DiskB | ドライブ1（A:）/ 2（B:）に入れるディスクイメージ（.dsk）。MSX2+ のドライブ2は、DiskB を選んで起動したときだけつながります（選ばなければ実機の HB-F1XDJ と同じ1ドライブで、B: は A: を使う仮想ドライブ） |
 | Mouse | `NONE` / `PORT 1` / `PORT 2`（PS/2マウスをそのジョイスティックポートにつなぐ） |
 | Joy B1〜B3 | マウスをつないだポートのコントローラのボタン1〜3で押すキー（既定は SPACE / RETURN / ESC） |
+| Next | 次に起動する機種。EmuLauncher の 2 つのファイルを置いたときだけ出ます（ビルド設定を参照）。Enter で変わり、電源を入れ直すかリセットすると切り替わります。 |
 | Run | 起動 |
 
 起動メニューとファイル選択は、ポート1のコントローラ（アタリ仕様 → シリアル変換器の1P）でも操作できます：↑↓ = 選択（押し続けると連続）、←→ = 1画面送り、ボタン1 = 決定（Enter）、ボタン2 = 取り消し（ESC）。
@@ -199,17 +206,29 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 | F11（一時停止中） | クイックロード（1〜5を選ぶ） | **ドライブ2（B:）**のディスク入れ替え |
 | Shift + F11（一時停止中） | クイックセーブ（1〜5を選ぶ） | **ドライブ2（B:）**のディスクをSDへ書き戻し |
 | F8 | PSGをSCCの波形で鳴らす ON / OFF | 同じ |
-| Shift + F8 | スプライトの横の制限（4枚）を外す | スプライトの横の制限（8枚）を外す |
-| F6 | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） | 同じ |
+| Shift + F8 | スプライトの横の枚数制限（4個）を外す / 戻す | 同じ（スプライトモード1 は4個、モード2 は8個の制限） |
+| F6 | なし | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） |
 
 - **MSX1 と MSX2+ の違い（注意）**
    - ディスクの入れ替えは、MSX1 が **F9**（ドライブ1のみ）、MSX2+ が **F10（ドライブ1）・F11（ドライブ2）** です。
    - F10・F11 は、MSX1 ではステートセーブ、MSX2+ ではディスクの入れ替えです（MSX2+ にステートセーブはありません）。
-   - F6のZ80速度変更とShift + F8のスプライト制限解除は両機種で使えます。
+   - F6（Z80の速さ）は MSX2+ のみです。
 - ※ディスクの書き戻しにライトプロテクト機能はありません。オリジナルデータは別途保管してください。
 - ※SCC対応ソフトの実行中は F8 を使わないでください。
-- ※Shift + F8 を ON にすると衝突検出とスプライト数超過の検出（MSX1は5枚目、MSX2+は9枚目）が止まります。不具合が出る場合は OFF にしてください。
-- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 228 = 実機相当、High 300、Super 372）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
+- ※Shift + F8 を ON にすると、5枚目（MSX2+ のスプライトモード2 では9枚目）の検出が止まります（MSX1 は衝突検出も止まります）。不具合が出る場合は OFF にしてください。
+- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 205 = 実機相当、High 285、Super 365）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
+
+### 画面の設定（MSX2+。MSX2.ino）
+
+`MSX2_WIDE_MONITOR` でモニタに合わせた表示を選びます（同期は標準の VGA 640×480・60Hz なので、どのモニタでも映ります）。
+
+| 値 | 内容 |
+|---|---|
+| 0（既定） | 4:3 のモニタ（または縦横比を保って表示するモニタ）向け |
+| 1 | 640×480 を全画面に引き伸ばす 16:9 のモニタ向け（横を縮めて 4:3 に見せる） |
+| 2 | ドットをモニタの画素にそろえる（標準の 640×480 と同じドットクロック。512ドットの画面で縦線が太らない。絵は1割細くなる）。1920×1200 のモニタ（EIZO EV2436W など）を「フルスクリーン」にすると、512ドットは3画素・256ドットは6画素ちょうどで表示されます |
+
+`MSX2_FULLHD 1`（1920×1080 の同期で出す）も残していますが、TTGO VGA32 では使えません（映らないモニタがあり、映ってもノイズがひどい。ボードのアナログ出力の回路が追いつかないためと思われます）。0 のままにしてください。
 
 ### ステートセーブ＆ロード（MSX1）
 
@@ -293,7 +312,7 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 
 ### エミュレータ特殊操作
 
-F6・F8〜F12 はエミュレータの操作に使います。F6 は両機種共通の Z80 速度変更、F8〜F12 の割り当ては機種によって異なります（「5. 操作ガイド」の表を参照）。
+F6・F8〜F12 はエミュレータの操作に使います（機種で割り当てが違います。「5. 操作ガイド」の表を参照）。
 
 ## 8. 開発者向け：キーボード・ローカライズ設計資料
 
@@ -347,7 +366,7 @@ MSX emulators for ESP32 using the FabGL library (Work in Progress). There are tw
 | `MSX/MSX.ino` | MSX1 (TMS9918A) | 320×200 |
 | `MSX2/MSX2.ino` | MSX2+ (modelled on Sony HB-F1XDJ, V9958; runs as V9938 with an MSX2 BIOS) | 512×212 |
 
-The boot menu and the file selector are shared by both. F12, F8, and F6 work on both machines. Disk swapping and other keys differ between MSX1 and MSX2+ (see the table in "5. Function Keys").
+The boot menu and the file selector are shared by both. F12 and F8 are common; disk swapping and other keys differ between MSX1 and MSX2+ (see the table in "5. Function Keys").
 
 ## Included Projects
 
@@ -369,10 +388,9 @@ The boot menu and the file selector are shared by both. F12, F8, and F6 work on 
 - **ESP32 Board Manager**: v2.0.5 (Recommended)
 - **Required Library**: FabGL v1.0.9
 - **Arduino IDE Settings**:
-   - **PSRAM**: "Enabled" (Required)
+   - **PSRAM** (ON = "Enabled", OFF = "Disabled"): With PSRAM ON, a software workaround for the chip errata (Espressif errata CPU-3.9) is built in, and the speed drops by about 20%. With PSRAM OFF, the sketch enables PSRAM by itself and the software workaround is not built in. However, this causes failures unless the ESP32 is chip revision 3 or later, so on any other revision a PSRAM OFF build is made not to start. This project already reaches 60 FPS with PSRAM ON, so there is no clear benefit in turning it OFF.
    - **Partition Scheme**: MSX1: "Default 4MB with SPIFFS" or similar, MSX2: "Huge APP" or similar
-
-If PSRAM is disabled, software errata countermeasures become invalid, resulting in about 20% faster performance, but since this project achieves 60 FPS even with PSRAM enabled, there is no particular practical benefit from disabling it. Keep PSRAM enabled when using this project.
+- **Switching machines with EmuLauncher** (optional): copy `emu_switch.h` and `partitions.csv` from the `EmuLauncher` folder into this sketch folder. The boot menu then gets **Next** (the machine to start next), and the flash is laid out as in `partitions.csv` (the Partition Scheme setting is not used). Without the two files the sketch works on its own as before. See `EmuLauncher/README.md`.
 
 ### Important Notes & License
 
@@ -424,7 +442,7 @@ This project aims to run MSX emulators at 60 FPS using an ESP32 and the FabGL li
 
 ## 3. SD Card Configuration and Setup
 
-Create a `/MSX1` folder (MSX1) and a `/MSX2` folder (MSX2+) in the root of the SD card and put the files below inside them (Mark III uses `/SMS`, PC-8801 `/PC88` and X1 `/X1`, so one SD card can hold the files of every machine).
+Create a `/MSX1` folder (MSX1) and a `/MSX2` folder (MSX2+) in the root of the SD card and put the files below inside them (Mark III uses `/SMS`, PC-8801 `/PC88`, X1 `/X1` and MZ-2500 `/MZ25`, so one SD card can hold the files of every machine).
 
 ### MSX1
 
@@ -494,9 +512,10 @@ A boot menu appears at power-on (MSX1 and MSX2+). Select an item with Up/Down an
 |---|---|
 | Slot1 / Slot2 | Cartridge: a .rom file in /MSX1/ROM or /MSX2/ROM, or `<NONE>`, `<SCC>` (ROM-less SCC cartridge), `<FM-PAC>` (Slot 2 only; default when FMPAC.ROM exists) |
 | Disk BIOS | Disk BIOS ON / OFF (when DISK.ROM exists) |
-| Disk1 / Disk2 | Disk images (.dsk) for drive 1 / 2 |
+| DiskA / DiskB | Disk images (.dsk) for drive 1 (A:) / 2 (B:). On the MSX2+, drive 2 is connected only when DiskB is chosen at boot (otherwise it has one drive like the real HB-F1XDJ, and B: is a virtual drive that uses A:) |
 | Mouse | `NONE` / `PORT 1` / `PORT 2` (connects a PS/2 mouse to that joystick port) |
 | Joy B1-B3 | Keys pressed by buttons 1-3 of the controller on the mouse port (default SPACE / RETURN / ESC) |
+| Next | The machine to start next. Shown only with EmuLauncher's two files (see Build Settings). Enter changes it; it takes effect at the next power-on or reset. |
 | Run | Start |
 
 The boot menu and the file selector can also be operated with the port 1 controller (1P of the Atari-to-serial converter): Up/Down = select (repeats while held), Left/Right = page up/down, button 1 = Enter, button 2 = cancel (ESC).
@@ -528,17 +547,29 @@ The boot menu and the file selector can also be operated with the port 1 control
 | F11 (paused) | Quick load (select 1-5) | Swap the disk in **drive 2 (B:)** |
 | Shift + F11 (paused) | Quick save (select 1-5) | Write **drive 2 (B:)** back to the SD card |
 | F8 | PSG played with SCC waveforms ON / OFF | same |
-| Shift + F8 | Remove the horizontal sprite limit (4 per line) | Remove the horizontal sprite limit (8 per line) |
-| F6 | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) | same |
+| Shift + F8 | Remove / restore the horizontal sprite limit (4 per line) | same (limit is 4 in sprite mode 1 and 8 in sprite mode 2) |
+| F6 | - | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) |
 
 - **Differences between MSX1 and MSX2+ (note)**
    - Disk swapping is **F9** (drive 1 only) on MSX1, and **F10 (drive 1) / F11 (drive 2)** on MSX2+.
    - F10 / F11 are state save keys on MSX1 and disk swap keys on MSX2+ (MSX2+ has no state save).
-   - F6 speed selection and Shift + F8 sprite limit removal are available on both machines.
+   - F6 (Z80 speed) is MSX2+ only.
 - There is no write-protect for disk write-back. Please keep backups of your original data.
 - Do not use F8 with software that already supports SCC.
-- Shift + F8 disables collision and excess-sprite detection (the 5th sprite on MSX1, the 9th on MSX2+). Turn it off if it causes glitches.
-- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 228 (real speed), High 300, Super 372. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
+- Shift + F8 disables the 5th-sprite detection (9th sprite in MSX2+ sprite mode 2); on MSX1 it also disables collision detection. Turn it off if it causes glitches.
+- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 205 (real speed), High 285, Super 365. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
+
+### Display Settings (MSX2+, MSX2.ino)
+
+`MSX2_WIDE_MONITOR` selects how the picture is fitted to your monitor (the sync is the standard VGA 640x480 @ 60 Hz, so every monitor shows it).
+
+| Value | Meaning |
+|---|---|
+| 0 (default) | For 4:3 monitors (or monitors that keep the aspect ratio) |
+| 1 | For 16:9 monitors that stretch 640x480 to the full screen (the picture is narrowed to look 4:3) |
+| 2 | Align the dots to the monitor's pixels (same dot clock as the standard 640x480; vertical lines of 512-dot screens do not get uneven widths; the picture is 10% narrower). On a 1920x1200 monitor (e.g. EIZO EV2436W) in "full screen" mode, 512-dot screens get exactly 3 pixels per dot and 256-dot screens 6 |
+
+`MSX2_FULLHD 1` (1920x1080 sync) is kept in the source but cannot be used with the TTGO VGA32: some monitors show nothing, and the others show heavy noise (the board's analog output circuit appears to be too slow for it). Keep it at 0.
 
 ### State Save & Load (MSX1)
 
@@ -620,7 +651,7 @@ With `KEYBORD_MAP` set to US_ENGLISH / PORTUGUESE (Brazilian ABNT2) / SPANISH / 
 
 ### Emulator Special Commands
 
-F6 and F8-F12 control the emulator. F6 changes Z80 speed on both machines; F8-F12 assignments differ (see the table in "5. Function Keys").
+F6 and F8-F12 control the emulator (assignments differ between machines; see the table in "5. Function Keys").
 
 ## 8. For Developers: Keyboard Localization Design
 

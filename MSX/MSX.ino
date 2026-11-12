@@ -73,6 +73,12 @@
 #include <stdlib.h>
 #include <SPI.h>
 #include <SD.h>
+#if __has_include("emu_switch.h")
+#include "emu_switch.h"
+#define EMU_SWITCH 1
+#else
+#define EMU_SWITCH 0
+#endif
 #include <fabgl.h>
 #include <vector>
 #include <algorithm>
@@ -122,11 +128,23 @@ Cart carts[3];
 
 #define DISK_IF_MEMORY_MAPPED
 
+// TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
-/#define SD_MISO 35  // ORANGE ESPer
 #define SD_MOSI 12
-#define SD_CS 13
+#define SD_CS   13
+
+// ORANGE ESPer
+// #define SD_SCLK 14
+// #define SD_MISO 35
+// #define SD_MOSI 12
+// #define SD_CS   13
+
+// Switch Science FabGL 
+// #define SD_SCLK 14
+// #define SD_MISO 35
+// #define SD_MOSI 2
+// #define SD_CS   13
 
 #define VDP_SAVE_SIZE offsetof(struct tms9918a, rasterbuffer0)
 #define VRAM_SIZE 16384
@@ -1540,12 +1558,18 @@ static String slotLabel(const String& s) {
   return s;
 }
 
-static char menuShown[12][56];
+#if EMU_SWITCH
+static const int MENU_NEXT = 9, MENU_RUN = 10, MENU_DY = 12;
+static int emuNext = -1;
+#else
+static const int MENU_RUN = 9, MENU_DY = 13;
+#endif
+static char menuShown[MENU_RUN + 3][56];
 static bool menuValid = false;
 static void bootMenuInvalidate() { menuValid = false; }
 
 static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capture) {
-  static const int X0 = 16, X1 = 303, Y0 = 28, DY = 13;
+  static const int X0 = 16, X1 = 303, Y0 = 28, DY = MENU_DY;
   static const char* mouseName[3] = { "NONE", "PORT 1", "PORT 2" };
   if (!menuValid) {
     uiFillRect(0, 0, 319, 199, UI_BLUE);
@@ -1553,7 +1577,7 @@ static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capt
     memset(menuShown, 0, sizeof(menuShown));
     menuValid = true;
   }
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i <= MENU_RUN; i++) {
     char line[48];
     switch (i) {
       case 0: snprintf(line, sizeof(line), "Slot1    : %.24s", slotLabel(bootSlot[0]).c_str()); break;
@@ -1565,7 +1589,10 @@ static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capt
       case 6: case 7: case 8:
         snprintf(line, sizeof(line), "Joy B%d   : %s", i - 5, (capture && i == cursor) ? "PRESS A KEY..." : msxKeyName(joyKey[i - 6]));
         break;
-      case 9: snprintf(line, sizeof(line), "Run"); break;
+#if EMU_SWITCH
+      case MENU_NEXT: { char m[40]; emuNextLabel(emuNext, "MSX", m, sizeof(m)); snprintf(line, sizeof(line), "Next     : %.30s", m); break; }
+#endif
+      case MENU_RUN: snprintf(line, sizeof(line), "Run"); break;
     }
     bool sel = (i == cursor);
     char shown[56];
@@ -1574,7 +1601,7 @@ static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capt
     strcpy(menuShown[i], shown);
     int y = Y0 + i * DY;
     uint8_t bg = !sel ? UI_BLUE : capture ? UI_YELLOW : UI_WHITE;
-    uiFillRect(X0 - 4, y - 3, X1, y + 9, bg);
+    uiFillRect(X0 - 4, y - (DY - 10), X1, y + 9, bg);
     uiText(X0, y, line, sel ? UI_BLUE : UI_WHITE, bg);
   }
   const char* help = capture ? "PRESS A KEY (F6-F12:CANCEL)"
@@ -1582,8 +1609,8 @@ static void bootMenuDraw(int cursor, bool hasDiskRom, const char* msg, bool capt
                                                   : "UP/DOWN:SELECT ENTER:CHANGE/RUN";
   const char* texts[2] = { help, msg ? msg : "" };
   for (int k = 0; k < 2; k++) {
-    if (strcmp(texts[k], menuShown[10 + k]) == 0) continue;
-    snprintf(menuShown[10 + k], sizeof(menuShown[0]), "%s", texts[k]);
+    if (strcmp(texts[k], menuShown[MENU_RUN + 1 + k]) == 0) continue;
+    snprintf(menuShown[MENU_RUN + 1 + k], sizeof(menuShown[0]), "%s", texts[k]);
     int y = k ? 200 - 20 : 200 - 34;
     uiFillRect(X0 - 4, y - 1, 319, y + 8, UI_BLUE);
     uiText(X0, y, texts[k], k ? UI_WHITE : UI_CYAN, UI_BLUE);
@@ -1600,10 +1627,16 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
   items.push_back(6);
   items.push_back(7);
   items.push_back(8);
-  items.push_back(9);
+#if EMU_SWITCH
+  items.push_back(MENU_NEXT);
+#endif
+  items.push_back(MENU_RUN);
   int pos = 0;
   const char* msg = nullptr;
   bool isBreak = false, isE0 = false, redraw = true, capture = false;
+#if EMU_SWITCH
+  emuNext = emuNextInit("MSX");
+#endif
   displayMode = DisplayMode::UI;
   clearKeyBuffer();
   bootMenuInvalidate();
@@ -1654,7 +1687,11 @@ static void bootMenu(bool hasDiskRom, bool hasFmPac) {
           bootMouse = (bootMouse + 1) % 3;
         } else if (it >= 6 && it <= 8) {
           capture = true;
-        } else if (it == 9) {
+#if EMU_SWITCH
+        } else if (it == MENU_NEXT) {
+          emuNext = emuNextCycle(emuNext, "MSX");
+#endif
+        } else if (it == MENU_RUN) {
           bootAutoDiskBios();
           bootMenuDraw(it, hasDiskRom, "LOADING...", false);
           msg = nullptr;
@@ -2289,6 +2326,9 @@ void setup() {
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   if (SD.begin(SD_CS, SPI)) {
+#if EMU_SWITCH
+    emuSwitchCheck("MSX");
+#endif
     File biosFile = SD.open(SD_ROOT "/MSX.ROM");
     if (biosFile) {
       size_t size = biosFile.size();
