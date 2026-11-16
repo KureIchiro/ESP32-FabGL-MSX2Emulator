@@ -48,6 +48,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 - **Arduino IDE 推奨設定**:
    - **PSRAM**（ON = "Enabled"、OFF = "Disabled"）: PSRAMをONにするとソフトでのエラッタ対策が入り、20%程度速度が低下します。PSRAMをOFFにするとソフトでPSRAMを有効にし、ソフトでのエラッタ対策は入りません。但し、ESP32のリビジョンが3以降でないと不具合が発生するため、それ以外のリビジョンでPSRAMをOFFにしても起動しなくしてあります。本プロジェクトではPSRAMをONにしても60FPSを達成している為、OFFにするメリットは明確にはありません。
    - **Partition Scheme**: MSX1 は "Default 4MB with SPIFFS" 等、MSX2 は "Huge APP" 等
+- **SD カードのピン**（`.ino` の先頭近くの `SD_SCLK` / `SD_MISO` / `SD_MOSI` / `SD_CS`）: ボードによって違います。既定は TTGO VGA32（14 / 2 / 12 / 13）です。ORANGE ESPer は 14 / 35 / 12 / 13、スイッチサイエンスの FabGL 開発ボードは 14 / 35 / 2 / 13 です。FabGL 開発ボードは SD カードを MISO = 16、MOSI = 17 で配線していますが、ESP32-WROVER ではこの 2 本はモジュールの中で PSRAM に使われていて外にはつながっていない（NC）ため、FabGL ボード上で 16 → 35、17 → 2 にジャンパしてください。使うボードのブロックを有効にし、ほかはコメントにしてください。
 - **EmuLauncher での機種の切り替え**（使うときだけ）: `EmuLauncher` のフォルダの `emu_switch.h` と `partitions.csv` を、このスケッチのフォルダにコピーします。起動メニューに **Next**（次に起動する機種）が出て、フラッシュの分け方が `partitions.csv` のとおりになります（Partition Scheme の設定は使われません）。2 つのファイルが無ければ、今までどおり単体で動きます。詳しくは `EmuLauncher/README.md` を見てください。
 
 ### 免責事項・注意事項
@@ -390,6 +391,7 @@ The boot menu and the file selector are shared by both. F12 and F8 are common; d
 - **Arduino IDE Settings**:
    - **PSRAM** (ON = "Enabled", OFF = "Disabled"): With PSRAM ON, a software workaround for the chip errata (Espressif errata CPU-3.9) is built in, and the speed drops by about 20%. With PSRAM OFF, the sketch enables PSRAM by itself and the software workaround is not built in. However, this causes failures unless the ESP32 is chip revision 3 or later, so on any other revision a PSRAM OFF build is made not to start. This project already reaches 60 FPS with PSRAM ON, so there is no clear benefit in turning it OFF.
    - **Partition Scheme**: MSX1: "Default 4MB with SPIFFS" or similar, MSX2: "Huge APP" or similar
+- **SD card pins** (`SD_SCLK` / `SD_MISO` / `SD_MOSI` / `SD_CS` near the top of the `.ino`): they differ by board. The default is TTGO VGA32 (14 / 2 / 12 / 13). ORANGE ESPer: 14 / 35 / 12 / 13. Switch Science FabGL development board: 14 / 35 / 2 / 13. The FabGL development board wires the SD card to MISO = 16 and MOSI = 17, but on an ESP32-WROVER these two pins are not connected (they are used inside the module for the PSRAM), so jumper 16 → 35 and 17 → 2 on the FabGL board. Enable the block for your board and comment out the others.
 - **Switching machines with EmuLauncher** (optional): copy `emu_switch.h` and `partitions.csv` from the `EmuLauncher` folder into this sketch folder. The boot menu then gets **Next** (the machine to start next), and the flash is laid out as in `partitions.csv` (the Partition Scheme setting is not used). Without the two files the sketch works on its own as before. See `EmuLauncher/README.md`.
 
 ### Important Notes & License

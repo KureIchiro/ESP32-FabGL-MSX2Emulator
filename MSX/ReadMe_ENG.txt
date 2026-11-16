@@ -30,6 +30,7 @@ Slot 3: RAM (64KB)
 
 ■ 3. SD Card Configuration and Setup
 The following files and folders must be placed in the root directory of the SD card. Please ensure all folders, including the SAVE folder, are created beforehand.
+* SD card pins: SD_SCLK / SD_MISO / SD_MOSI / SD_CS near the top of MSX.ino differ by board. The default is TTGO VGA32 (14 / 2 / 12 / 13). ORANGE ESPer: 14 / 35 / 12 / 13. Switch Science FabGL development board: 14 / 35 / 2 / 13. The FabGL development board wires the SD card to MISO = 16 and MOSI = 17, but on an ESP32-WROVER these two pins are not connected (they are used inside the module for the PSRAM), so jumper 16 -> 35 and 17 -> 2 on the FabGL board. Enable the block for your board and comment out the others.
 
 / (SD Root)
 ├── MSX.ROM         : MSX1 Original BIOS (32KB / Required)
