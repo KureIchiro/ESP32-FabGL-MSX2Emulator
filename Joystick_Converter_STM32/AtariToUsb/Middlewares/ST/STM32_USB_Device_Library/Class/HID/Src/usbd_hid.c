@@ -317,7 +317,7 @@ __ALIGN_BEGIN static uint8_t USBD_HID_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIER_
 
 __ALIGN_BEGIN static uint8_t HID_MOUSE_ReportDesc[HID_MOUSE_REPORT_DESC_SIZE]  __ALIGN_END =
 {
-  /* Gamepad: 1-byte report = [bit7:padding][bit6-4:3 buttons][bit3-0:hat switch] */
+  /* Gamepad: 1-byte report = [bit7-4:4 buttons][bit3-0:hat switch] */
   0x05, 0x01,        /* Usage Page (Generic Desktop)            */
   0x09, 0x05,        /* Usage (Game Pad)                        */
   0xA1, 0x01,        /* Collection (Application)                */
@@ -334,20 +334,15 @@ __ALIGN_BEGIN static uint8_t HID_MOUSE_ReportDesc[HID_MOUSE_REPORT_DESC_SIZE]  _
   0x95, 0x01,        /*   Report Count (1)                      */
   0x81, 0x42,        /*   Input (Data,Var,Abs,Null State)       */
 
-  /* --- 3 buttons : 3 bits --- */
+  /* --- 4 buttons : 4 bits --- */
   0x05, 0x09,        /*   Usage Page (Button)                   */
   0x19, 0x01,        /*   Usage Minimum (Button 1)              */
-  0x29, 0x03,        /*   Usage Maximum (Button 3)              */
+  0x29, 0x04,        /*   Usage Maximum (Button 4)              */
   0x15, 0x00,        /*   Logical Minimum (0)                   */
   0x25, 0x01,        /*   Logical Maximum (1)                   */
   0x75, 0x01,        /*   Report Size (1)                       */
-  0x95, 0x03,        /*   Report Count (3)                      */
+  0x95, 0x04,        /*   Report Count (4)                      */
   0x81, 0x02,        /*   Input (Data,Var,Abs)                  */
-
-  /* --- Padding : 1 bit --- */
-  0x75, 0x01,        /*   Report Size (1)                       */
-  0x95, 0x01,        /*   Report Count (1)                      */
-  0x81, 0x03,        /*   Input (Const,Var,Abs)                 */
 
   0xC0               /* End Collection                          */
 };

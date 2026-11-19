@@ -32,7 +32,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define EXT_PORT       GPIOB
+#define BTN4_PIN       GPIO_PIN_12
+#define TURBO4_PIN     GPIO_PIN_13
+#define MODE_SW_PIN    GPIO_PIN_14
+#define LED_PORT       GPIOC
+#define LED_PIN        GPIO_PIN_13
+#define MODE_HOLD_MS   1000
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,7 +50,7 @@
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+static uint8_t four_button_mode = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,7 +63,16 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static uint8_t read_button4(uint8_t rapid_st)
+{
+    if (HAL_GPIO_ReadPin(EXT_PORT, BTN4_PIN) != GPIO_PIN_RESET) return 0;
+    return (HAL_GPIO_ReadPin(EXT_PORT, TURBO4_PIN) != GPIO_PIN_RESET || !rapid_st) ? 1 : 0;
+}
 
+static void led_set(uint8_t on)
+{
+    HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
 /* USER CODE END 0 */
 
 /**
@@ -97,6 +112,12 @@ int main(void)
   uint8_t rapid_state = 0;
   uint32_t rapid_interval = 40;  // 12.5連射/秒
   uint32_t serial_interval = 12; // 12ms周期送信
+  uint32_t mode_press_tick = 0;
+  uint8_t mode_pressed = 0;
+  uint8_t mode_toggled = 0;
+  uint32_t last_led_tick = HAL_GetTick();
+  uint8_t led_on = 1;
+  led_set(led_on);
 
   extern USBD_HandleTypeDef hUsbDeviceFS;
   extern UART_HandleTypeDef huart2; // USART2を使用
@@ -125,7 +146,7 @@ int main(void)
           if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET) {
               if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_15) != GPIO_PIN_RESET || rapid_st) data &= ~(1 << 6);
           }
-          data &= ~(1 << 7); // IDビット: 0 (1P識別用、ここだけは常に0)
+          data &= ~(1 << 7);
 
       } else {
           // コントローラ② (B11:U, B10:D, B1:L, B0:R, A7:B1, A6:B2, A5:B3)
@@ -162,14 +183,38 @@ int main(void)
           last_rapid_tick = current_tick;
       }
 
-      // 2. 12ms周期 送信処理
+      if (HAL_GPIO_ReadPin(EXT_PORT, MODE_SW_PIN) == GPIO_PIN_RESET) {
+          if (!mode_pressed) {
+              mode_pressed = 1;
+              mode_toggled = 0;
+              mode_press_tick = current_tick;
+          } else if (!mode_toggled && current_tick - mode_press_tick >= MODE_HOLD_MS) {
+              four_button_mode = !four_button_mode;
+              mode_toggled = 1;
+              led_on = 1;
+              led_set(led_on);
+              last_led_tick = current_tick;
+          }
+      } else {
+          mode_pressed = 0;
+      }
+
+      if (current_tick - last_led_tick >= (four_button_mode ? 500u : 1000u)) {
+          led_on = !led_on;
+          led_set(led_on);
+          last_led_tick = current_tick;
+      }
+
           if (current_tick - last_serial_tick >= serial_interval) {
               uint8_t tx_buf[2];
+              uint8_t btn4 = read_button4(rapid_state);
               tx_buf[0] = read_controller_raw(1, rapid_state);
               tx_buf[1] = read_controller_raw(2, rapid_state);
 
+              if (four_button_mode && !btn4) tx_buf[0] |= (1 << 7);
+
               // USART2送信 (0でONのバイナリがそのまま飛ぶ)
-              HAL_UART_Transmit(&huart2, tx_buf, 2, 10);
+              HAL_UART_Transmit(&huart2, tx_buf, four_button_mode ? 1 : 2, 10);
 
               // USB HID送信 (1Pのみ)
               // 0のときに各方向が「真」になるよう判定を反転
@@ -184,8 +229,7 @@ int main(void)
               else if (u)      hat = 0; else if (r)      hat = 2;
               else if (d)      hat = 4; else if (l)      hat = 6;
 
-              // ボタンも反転させて取り出す (0のとき1にする)
-              uint8_t usb_buttons = (~tx_buf[0] >> 4) & 0x07;
+              uint8_t usb_buttons = ((~tx_buf[0] >> 4) & 0x07) | (btn4 << 3);
               uint8_t report = (usb_buttons << 4) | (hat & 0x0F);
               USBD_HID_SendReport(&hUsbDeviceFS, &report, 1);
 
@@ -314,7 +358,18 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+  GPIO_InitStruct.Pin = BTN4_PIN|TURBO4_PIN|MODE_SW_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(EXT_PORT, &GPIO_InitStruct);
 
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = LED_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_PORT, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

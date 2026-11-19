@@ -25,6 +25,12 @@ STM32版のUSB HID機能は含みません。このスケッチはArduino Mega 2
   ボタン1: D36  ボタン2: D37  ボタン3: D38
   連射SW1: D39  連射SW2: D40  連射SW3: D41
 
+コントローラー1のボタン4 (1コン4ボタンモードだけ使用):
+  ボタン4: D42  連射SW4: D43
+
+モード切替SW (押しボタン。GNDとの間に接続): D44
+LED: オンボードLED (D13)
+
 UART:
   Arduino Mega TX1 (D18) -> ESP32 IO39 (RX)
   Arduino GND          -> ESP32 GND
@@ -34,24 +40,46 @@ UART:
 必ず入れ、IO39へ約3.3Vを入力してください。5Vを直接接続しないでください。
 3.3V系ボードへ移植する場合も、使用するボードのUART電圧を確認してください。
 
+モード
+------
+起動時は「2コン3ボタンモード」です。モード切替SWを1秒押し続けるごとに
+「2コン3ボタンモード」と「1コン4ボタンモード」が切り替わります
+(押し続けても切り替わるのは1回だけです)。電源を入れ直すと
+2コン3ボタンモードに戻ります。
+
+  2コン3ボタンモード: コントローラー1・2を送信します。
+                      LEDは1秒ごとに点灯・消灯します。
+  1コン4ボタンモード: コントローラー1だけを送信し、b7をボタン4にします
+                      (ESP32のメガドライブ・PCエンジンのエミュレータ用)。
+                      LEDは500msごとに点灯・消灯します。
+
+1コン4ボタンモードのままほかの機種のエミュレータで使うと、ボタン4を
+離しているあいだは2Pとして扱われます。
+
 通信仕様
 --------
   ボーレート: 115200 bps
   送信周期: 約12ms
   送信順: コントローラー1、コントローラー2 (各1バイト)
+          1コン4ボタンモードではコントローラー1だけ (1バイト)
 
 各バイトのビット配置 (Active Low):
   b7: ID (0=コントローラー1、1=コントローラー2)
+      1コン4ボタンモードではボタン4 (0=ON、1=OFF)
   b6: ボタン3   b5: ボタン2   b4: ボタン1
   b3: 右         b2: 左         b1: 下         b0: 上
   ON=0、OFF=1
 
 連射SWをGNDに接続すると対応ボタンの連射が有効になります。
 連射の切り替え周期は約40msです。ボタン2はSTM32版との動作互換のため、
-ボタン1・3と反対の位相で切り替わります。
+ボタン1・3と反対の位相で切り替わります。ボタン4はボタン2と同じ位相です。
 
 Arduino IDEで Arduino Mega 2560 を選択して、このフォルダ内の
 Joystick_Converter_arduino.ino を書き込んでください。
+
+ライセンス
+----------
+MIT ライセンスです (LICENSE を見てください)。
 
 
 English
@@ -84,6 +112,12 @@ Controller 2:
   Button 1: D36  Button 2: D37  Button 3: D38
   Turbo SW 1: D39  Turbo SW 2: D40  Turbo SW 3: D41
 
+Controller 1 button 4 (used in 1-controller 4-button mode only):
+  Button 4: D42  Turbo SW 4: D43
+
+Mode switch (push button, connected to GND): D44
+LED: on-board LED (D13)
+
 UART:
   Arduino Mega TX1 (D18) -> ESP32 IO39 (RX), through level conversion
   Arduino GND             -> ESP32 GND
@@ -94,14 +128,32 @@ between TX1 and IO39 so the ESP32 receives about 3.3V. Never connect 5V
 directly to an ESP32 input. When porting to a 3.3V board, check its UART
 logic voltage as well.
 
+Modes
+-----
+The converter starts in 2-controller 3-button mode. Each time the mode
+switch is held for 1 second, it toggles between 2-controller 3-button mode
+and 1-controller 4-button mode (holding it longer toggles only once).
+Power-cycling returns to 2-controller 3-button mode.
+
+  2-controller 3-button mode: sends Controller 1 and 2.
+                              The LED turns on/off every 1 second.
+  1-controller 4-button mode: sends Controller 1 only, with b7 as button 4
+                              (for the ESP32 Mega Drive / PC Engine emulators).
+                              The LED turns on/off every 500 ms.
+
+If 1-controller 4-button mode is used with the other emulators, the input is
+treated as player 2 while button 4 is released.
+
 Communication Protocol
 ----------------------
   Baud rate: 115200 bps
   Transmit interval: approximately 12 ms
   Byte order: Controller 1, then Controller 2 (one byte each)
+              Controller 1 only (one byte) in 1-controller 4-button mode
 
 Bit layout for each byte (active low):
   b7: ID (0=Controller 1, 1=Controller 2)
+      Button 4 (0=ON, 1=OFF) in 1-controller 4-button mode
   b6: Button 3   b5: Button 2   b4: Button 1
   b3: Right      b2: Left      b1: Down      b0: Up
   ON=0, OFF=1
@@ -109,6 +161,11 @@ Bit layout for each byte (active low):
 Connect a turbo switch to GND to enable rapid fire for its corresponding
 button. The rapid-fire toggle interval is approximately 40 ms. Button 2
 toggles in the opposite phase from Buttons 1 and 3 to match the STM32 version.
+Button 4 toggles in the same phase as Button 2.
 
 In Arduino IDE, select Arduino Mega 2560 and upload
 Joystick_Converter_arduino.ino from this folder.
+
+License
+-------
+MIT License (see LICENSE).
