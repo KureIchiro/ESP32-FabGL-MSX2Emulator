@@ -5,7 +5,7 @@
  *
  * [ Credits & Acknowledgments ]
  *  - Graphics/Audio Engine: FabGL by Fabrizio Di Vittorio.
- *  - Z80 CPU Core: Modified based on the work by Marat Fayzullin.
+ *  - Z80 CPU Core: z80core, written for this collection (MIT License, Copyright Kure Ichiro; z80core.c / z80core.h).
  *  - VDP Section: Modified based on the TMS9918A core originally by David Latham
  *                 and maintained by Marat Fayzullin.
  *  Special thanks to all authors for providing these excellent foundations.
@@ -28,7 +28,7 @@
  * [ Important Notes ]
  *  - This project is under development and may contain bugs or redundant code.
  *  - Localization (e.g., keyboard mappings) should be customized by the user.
- *  - Subject to the license policies of FabGL and Marat Fayzullin (fMSX License).
+ *  - Subject to the license policies of FabGL, Marat Fayzullin (fMSX License; the VDP section) and z80core (MIT License).
  * ============================================================================
  */
 
@@ -39,7 +39,7 @@
  *
  * 【クレジットと謝辞】
  *  - グラフィック/オーディオエンジン: Fabrizio Di Vittorio氏による FabGL を使用しています。
- *  - Z80 CPUコア: Marat Fayzullin氏によるコードをベースに改変して使用しています。
+ *  - Z80 CPUコア: このシリーズのために書いた z80core を使用しています(MIT ライセンス、Copyright Kure Ichiro。z80core.c・z80core.h)。
  *  - VDPセクション: David Latham氏によるTMS9918Aエミュレーションコアをベースに、
  *                  Marat Fayzullin氏が調整を加えた実装を改変して使用しています。
  *  素晴らしい基盤を公開されている諸氏に深く感謝の意を表します。
@@ -61,8 +61,8 @@
  * 【注意事項】
  *  - 本プロジェクトは開発中であり、不具合や最適化不足なコードが含まれる場合があります。
  *  - キーボード配列等のローカライズに関しては、各自の環境に合わせて修正してください。
- *  - 本ソフトウェア内の各コアのライセンスは、FabGL、および Marat Fayzullin氏
- *    (fMSX License) の各ポリシーに従います。
+ *  - 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License。VDP セクション)、
+ *    z80core (MIT License) の各ポリシーに従います。
  * ============================================================================
  */
 
@@ -96,7 +96,7 @@
 #define psramFixMissing() (ESP.getChipRevision() < 3)
 #endif
 #include "tms9918a.h"
-#include "Z80.h"
+#include "z80core.h"
 #include "KeyboardSystem.hpp"
 #include "JoyKeys.hpp"
 
@@ -140,7 +140,7 @@ Cart carts[3];
 // #define SD_MOSI 12
 // #define SD_CS   13
 
-// Switch Science FabGL 
+// Switch Science FabGL
 // #define SD_SCLK 14
 // #define SD_MISO 35
 // #define SD_MOSI 2
@@ -155,30 +155,28 @@ extern "C" {
   int readIO(void* context, int port);
   void writeIO(void* context, int port, int val);
 
-  extern Z80 cpu;
+  extern z80_t cpu;
 
-  byte RdZ80Slow(zword Addr);
-  void WrZ80Slow(zword Addr, byte Value);
-  byte InZ80(zword Port);
-  void OutZ80(zword Port, byte Value);
-  void PatchZ80(Z80* R);
+  uint8_t RdZ80Slow(uint16_t Addr);
+  void WrZ80Slow(uint16_t Addr, uint8_t Value);
+  uint8_t InZ80(uint16_t Port);
+  void OutZ80(uint16_t Port, uint8_t Value);
 }
 
-Z80 cpu;
+z80_t cpu;
 
-byte IRAM_ATTR RdZ80Slow(zword Addr) {
-  return (byte)readByte(NULL, Addr);
+uint8_t IRAM_ATTR RdZ80Slow(uint16_t Addr) {
+  return (uint8_t)readByte(NULL, Addr);
 }
-void IRAM_ATTR WrZ80Slow(zword Addr, byte Value) {
+void IRAM_ATTR WrZ80Slow(uint16_t Addr, uint8_t Value) {
   writeByte(NULL, Addr, Value);
 }
-byte IRAM_ATTR InZ80(zword Port) {
-  return (byte)readIO(NULL, Port);
+uint8_t IRAM_ATTR InZ80(uint16_t Port) {
+  return (uint8_t)readIO(NULL, Port);
 }
-void IRAM_ATTR OutZ80(zword Port, byte Value) {
+void IRAM_ATTR OutZ80(uint16_t Port, uint8_t Value) {
   writeIO(NULL, Port, Value);
 }
-void PatchZ80(Z80* R) {}
 
 void listROMs();
 void updateKeyboard();
@@ -1165,22 +1163,22 @@ void syncGametoPSRAM(int idx) {
   for (int i = 0; i < 8; i++) memcpy(p + i * 0x2000, slot3_page[i], 0x2000);
   p += 65536;
 
-  tempState.AF = cpu.AF.W;
-  tempState.BC = cpu.BC.W;
-  tempState.DE = cpu.DE.W;
-  tempState.HL = cpu.HL.W;
-  tempState.IX = cpu.IX.W;
-  tempState.IY = cpu.IY.W;
-  tempState.PC = cpu.PC.W;
-  tempState.SPtr = cpu.SPtr.W;
-  tempState.AF1 = cpu.AF1.W;
-  tempState.BC1 = cpu.BC1.W;
-  tempState.DE1 = cpu.DE1.W;
-  tempState.HL1 = cpu.HL1.W;
-  tempState.I = cpu.I;
-  tempState.R = cpu.R;
-  tempState.IFF = cpu.IFF;
-  tempState.IRequest = cpu.IRequest;
+  tempState.AF = cpu.af.w;
+  tempState.BC = cpu.bc.w;
+  tempState.DE = cpu.de.w;
+  tempState.HL = cpu.hl.w;
+  tempState.IX = cpu.ix.w;
+  tempState.IY = cpu.iy.w;
+  tempState.PC = cpu.pc.w;
+  tempState.SPtr = cpu.sp.w;
+  tempState.AF1 = cpu.af2;
+  tempState.BC1 = cpu.bc2;
+  tempState.DE1 = cpu.de2;
+  tempState.HL1 = cpu.hl2;
+  tempState.I = cpu.i;
+  tempState.R = z80core_get_r(&cpu);
+  tempState.IFF = (cpu.iff1 ? 0x01 : 0) | (cpu.iff2 ? 0x08 : 0) | (cpu.im == 1 ? 0x02 : cpu.im == 2 ? 0x04 : 0) | (cpu.halted ? 0x80 : 0);
+  tempState.IRequest = 0xFFFF;
   tempState.primary_slot = slot_reg;
   for (int i = 0; i < 4; i++) tempState.rom_banks[i] = (uint8_t)carts[1].banks[i];
 
@@ -1231,24 +1229,25 @@ void syncPSRAMtoGame(int idx) {
   memcpy(&state, p, sizeof(StateSaveData));
   p += sizeof(StateSaveData);
 
-  cpu.AF.W = state.AF;
-  cpu.BC.W = state.BC;
-  cpu.DE.W = state.DE;
-  cpu.HL.W = state.HL;
-  cpu.IX.W = state.IX;
-  cpu.IY.W = state.IY;
-  cpu.PC.W = state.PC;
-  cpu.SPtr.W = state.SPtr;
-  cpu.AF1.W = state.AF1;
-  cpu.BC1.W = state.BC1;
-  cpu.DE1.W = state.DE1;
-  cpu.HL1.W = state.HL1;
-  cpu.I = state.I;
-  cpu.R = state.R;
-  cpu.IFF = state.IFF;
-  cpu.IRequest = state.IRequest;
-  if (cpu.IPeriod <= 0) cpu.IPeriod = 597;
-  cpu.ICount = cpu.IPeriod;
+  cpu.af.w = state.AF;
+  cpu.bc.w = state.BC;
+  cpu.de.w = state.DE;
+  cpu.hl.w = state.HL;
+  cpu.ix.w = state.IX;
+  cpu.iy.w = state.IY;
+  cpu.pc.w = state.PC;
+  cpu.sp.w = state.SPtr;
+  cpu.af2 = state.AF1;
+  cpu.bc2 = state.BC1;
+  cpu.de2 = state.DE1;
+  cpu.hl2 = state.HL1;
+  cpu.i = state.I;
+  cpu.r = cpu.r7 = state.R;
+  cpu.iff1 = (state.IFF & 0x01) != 0;
+  cpu.iff2 = (state.IFF & 0x08) != 0;
+  cpu.im = (state.IFF & 0x04) ? 2 : (state.IFF & 0x02) ? 1 : 0;
+  cpu.halted = (state.IFF & 0x80) != 0;
+  cpu.ei_delay = 0;
 
   memcpy(vdp->framebuffer, p, VRAM_SIZE);
   p += VRAM_SIZE;
@@ -2145,12 +2144,12 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
 
     for (int i = 0; i < 262; ++i) {
       fdcLines++;
-      ExecZ80(&cpu, CPU_CYCLE_M1WAIT);
+      z80core_run(&cpu, CPU_CYCLE_M1WAIT);
       if (i == 192) {
         frameReady = true;
       }
-      if (tms9918a_irq_pending(vdp) && (cpu.IFF & IFF_1)) {
-        IntZ80(&cpu, 0x38);
+      if (tms9918a_irq_pending(vdp) && cpu.iff1) {
+        z80core_int(&cpu, 0xFF);
       }
     }
     now = esp_timer_get_time();
@@ -2409,11 +2408,9 @@ void setup() {
   ssr3 = 0;
   updateMemoryMap();
 
-  memset(&cpu, 0, sizeof(Z80));
-  ResetZ80(&cpu);
-  cpu.IPeriod = 512;
-  cpu.SPtr.W = 0xF380;
-  cpu.AF.B.h = 0x00;
+  z80core_init(&cpu);
+  cpu.sp.w = 0xF380;
+  cpu.af.b.h = 0x00;
 
   vpClearRows(0, 199);
   displayMode = DisplayMode::GAME;

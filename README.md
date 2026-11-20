@@ -36,7 +36,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 ### クレジットと謝辞
 
 - **グラフィック/オーディオエンジン**: [Fabrizio Di Vittorio氏](https://github.com/fdivitto/FabGL)による FabGL を使用。
-- **Z80 CPUコア**: Marat Fayzullin氏のコードをベースに改変。
+- **Z80 CPUコア**: このシリーズのために書いた z80core（MIT ライセンス、Copyright Kure Ichiro。`z80core.c`・`z80core.h`）。
 - **VDPセクション（MSX1）**: David Latham氏のTMS9918Aコアをベースに、Marat Fayzullin氏が調整した実装を改変。
 - **FM音源（YM2413）**: 岡崎光考氏の emu2413 を使用。
 
@@ -53,7 +53,7 @@ ESP32とFabGLライブラリを使用したMSXエミュレータです（開発�
 
 ### 免責事項・注意事項
 
-- 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License)、岡崎光考氏 (emu2413) の各ポリシーに従います。
+- 本ソフトウェア内の各コアのライセンスは、FabGL、Marat Fayzullin氏 (fMSX License。MSX1 の VDP セクション)、岡崎光考氏 (emu2413) の各ポリシーに従います。Z80 コア（z80core）は MIT ライセンスです。
 - 本プロジェクトは開発中であり、不具合や最適化不足なコードが含まれる場合があります。
 - 本ソフトウェアの使用によって生じたいかなる損害についても、開発者は一切の責任を負いません。
 
@@ -379,7 +379,7 @@ The boot menu and the file selector are shared by both. F12 and F8 are common; d
 ### Credits & Acknowledgments
 
 - **Graphics/Audio Engine**: [FabGL](https://github.com/fdivitto/FabGL) by Fabrizio Di Vittorio.
-- **Z80 CPU Core**: Based on code by Marat Fayzullin.
+- **Z80 CPU Core**: z80core, written for this collection (MIT License, Copyright Kure Ichiro; `z80core.c` / `z80core.h`).
 - **VDP Section (MSX1)**: Based on TMS9918A core by David Latham, with adjustments by Marat Fayzullin.
 - **FM Sound (YM2413)**: emu2413 by Mitsutaka Okazaki.
 
@@ -396,7 +396,7 @@ The boot menu and the file selector are shared by both. F12 and F8 are common; d
 
 ### Important Notes & License
 
-- This project adheres to the licenses of FabGL, Marat Fayzullin (fMSX License) and Mitsutaka Okazaki (emu2413).
+- This project adheres to the licenses of FabGL, Marat Fayzullin (fMSX License; the MSX1 VDP section) and Mitsutaka Okazaki (emu2413). The Z80 core (z80core) is under the MIT License.
 - This is a work in progress; it may contain bugs or unoptimized code.
 - The developer is not responsible for any damage caused by using this software.
 

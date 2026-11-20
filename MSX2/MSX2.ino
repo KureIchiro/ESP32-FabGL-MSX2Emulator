@@ -5,7 +5,7 @@
  *
  * [ Credits & Acknowledgments ]
  *  - Graphics/Audio Engine: FabGL by Fabrizio Di Vittorio.
- *  - Z80 CPU Core: Modified based on the work by Marat Fayzullin.
+ *  - Z80 CPU Core: z80core, written for this collection (MIT License, Copyright Kure Ichiro; z80core.c / z80core.h).
  *  - FM Sound Unit (optional): "emu2413" by Mitsutaka Okazaki (MIT License).
  *  Special thanks to all authors for providing these excellent foundations.
  *
@@ -19,7 +19,7 @@
  *  - ESP32 Dev Module
  *
  * [ Disclaimer ]
- *  IN NO EVENT SHALL FABRIZIO DI VITTORIO, MARAT FAYZULLIN, MITSUTAKA OKAZAKI,
+ *  IN NO EVENT SHALL FABRIZIO DI VITTORIO, MITSUTAKA OKAZAKI,
  *  OR THE DEVELOPER BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, OR
  *  CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE.
  *  USE AT YOUR OWN RISK.
@@ -87,7 +87,7 @@
 #include "msx2.h"
 #include "v9958.h"
 #include "wd2793.h"
-#include "Z80.h"
+#include "z80core.h"
 #include "KeyboardSystem.hpp"
 #include "JoyKeys.hpp"
 
@@ -112,7 +112,7 @@
 // #define SD_MOSI 12
 // #define SD_CS   13
 
-// Switch Science FabGL 
+// Switch Science FabGL
 // #define SD_SCLK 14
 // #define SD_MISO 35
 // #define SD_MOSI 2

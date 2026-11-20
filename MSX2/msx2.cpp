@@ -6,7 +6,7 @@
 #endif
 #include "msx2.h"
 #include "v9958.h"
-#include "Z80.h"
+#include "z80core.h"
 #include <string.h>
 #if MSX2_PROFILE
 #include <stdarg.h>
@@ -17,17 +17,16 @@ static int cpuCyclesPerLine = 205;
 #define CPU_CYCLES_PER_LINE cpuCyclesPerLine
 
 extern "C" {
-  Z80 msx2_cpu;
+  z80_t msx2_cpu;
   uint8_t *op_map[8];
   uint8_t *msx2_rd_map[8];
   uint8_t *msx2_wr_map[8];
-  byte RdZ80Slow(zword a);
-  void WrZ80Slow(zword a, byte v);
-  byte RdZ80(zword a);
-  void WrZ80(zword a, byte v);
-  byte InZ80(zword port);
-  void OutZ80(zword port, byte v);
-  void PatchZ80(Z80 *R);
+  uint8_t RdZ80Slow(uint16_t a);
+  void WrZ80Slow(uint16_t a, uint8_t v);
+  uint8_t RdZ80(uint16_t a);
+  void WrZ80(uint16_t a, uint8_t v);
+  uint8_t InZ80(uint16_t port);
+  void OutZ80(uint16_t port, uint8_t v);
 }
 
 static MSX2_DRAM uint8_t emptyPage[0x2000];
@@ -431,7 +430,7 @@ static uint8_t MSX2_FAST readIO(uint8_t p) {
 #else
       uint8_t v = vdpReadPort(p & 3);
 #endif
-      if (MSX2_UNLIKELY(msx2_cpu.IRequest == INT_IRQ) && !vdpIrq()) msx2_cpu.IRequest = INT_NONE;
+      if (MSX2_UNLIKELY(msx2_cpu.irq) && !vdpIrq()) msx2_cpu.irq = 0;
       return v;
     }
     case 0xA2:
@@ -472,7 +471,7 @@ static void MSX2_FAST writeIO(uint8_t p, uint8_t v) {
 #else
       vdpWritePort(p & 3, v);
 #endif
-      if (MSX2_UNLIKELY(msx2_cpu.IRequest == INT_IRQ) && !vdpIrq()) msx2_cpu.IRequest = INT_NONE;
+      if (MSX2_UNLIKELY(msx2_cpu.irq) && !vdpIrq()) msx2_cpu.irq = 0;
       return;
     case 0xA0: psgAddr = v & 15; return;
     case 0xA1:
@@ -511,17 +510,16 @@ static void MSX2_FAST writeIO(uint8_t p, uint8_t v) {
 }
 
 extern "C" {
-byte MSX2_FAST RdZ80(zword a)         { return readByte(a); }
-void MSX2_FAST WrZ80(zword a, byte v) { writeByte(a, v); }
-byte MSX2_FAST RdZ80Slow(zword a)         { return readSpecial(a); }
-void MSX2_FAST WrZ80Slow(zword a, byte v) { writeSpecial(a, v); }
-byte MSX2_FAST InZ80(zword port)      { return readIO((uint8_t)port); }
-void MSX2_FAST OutZ80(zword port, byte v) { writeIO((uint8_t)port, v); }
-void PatchZ80(Z80 *R) { (void)R; }
+uint8_t MSX2_FAST RdZ80(uint16_t a)         { return readByte(a); }
+void MSX2_FAST WrZ80(uint16_t a, uint8_t v) { writeByte(a, v); }
+uint8_t MSX2_FAST RdZ80Slow(uint16_t a)         { return readSpecial(a); }
+void MSX2_FAST WrZ80Slow(uint16_t a, uint8_t v) { writeSpecial(a, v); }
+uint8_t MSX2_FAST InZ80(uint16_t port)      { return readIO((uint8_t)port); }
+void MSX2_FAST OutZ80(uint16_t port, uint8_t v) { writeIO((uint8_t)port, v); }
 }
 
 int vdpLineCycle() {
-  int c = CPU_CYCLES_PER_LINE - msx2_cpu.ICount;
+  int c = CPU_CYCLES_PER_LINE - msx2_cpu.icount;
   if (c < 0) c = 0;
   return c * MSX2_CYCLES_PER_LINE / CPU_CYCLES_PER_LINE;
 }
@@ -529,7 +527,6 @@ int vdpLineCycle() {
 void msx2SetCpuCycles(int n) {
   if (n < 100) n = 100;
   cpuCyclesPerLine = n;
-  msx2_cpu.IPeriod = n;
 }
 int msx2GetCpuCycles() { return cpuCyclesPerLine; }
 
@@ -699,10 +696,8 @@ void msx2Reset() {
   updateMemoryMap();
 
   vdpReset();
-  memset(&msx2_cpu, 0, sizeof(msx2_cpu));
-  ResetZ80(&msx2_cpu);
-  msx2_cpu.IPeriod = CPU_CYCLES_PER_LINE;
-  msx2_cpu.IAutoReset = 1;
+  z80core_init(&msx2_cpu);
+  msx2_cpu.irq_autoclear = 1;
 #if MSX2_PROFILE
   profClear();
 #endif
@@ -723,21 +718,22 @@ void MSX2_FAST msx2RunFrame() {
     vdpCycles += t1 - t0;
 #endif
     if (vdpIrq()) {
-      msx2_cpu.IRequest = INT_IRQ;
-      if (msx2_cpu.IFF & IFF_1) {
-        IntZ80(&msx2_cpu, INT_IRQ);
+      msx2_cpu.irq = 1;
+      if (msx2_cpu.iff1) {
+        z80core_int(&msx2_cpu, 0xFF);
+        msx2_cpu.irq = 0;
         PROF_COUNT(PN_IRQ);
       }
     } else {
-      msx2_cpu.IRequest = INT_NONE;
+      msx2_cpu.irq = 0;
     }
 #if MSX2_PROFILE
-    bool pending = (msx2_cpu.IRequest == INT_IRQ);
-    if (msx2_cpu.IFF & IFF_HALT) PROF_COUNT(PN_HALT);
+    bool pending = msx2_cpu.irq != 0;
+    if (msx2_cpu.halted) PROF_COUNT(PN_HALT);
 #endif
-    ExecZ80(&msx2_cpu, CPU_CYCLES_PER_LINE);
+    z80core_run(&msx2_cpu, CPU_CYCLES_PER_LINE);
 #if MSX2_PROFILE
-    if (pending && msx2_cpu.IRequest != INT_IRQ) PROF_COUNT(PN_IRQ);
+    if (pending && !msx2_cpu.irq) PROF_COUNT(PN_IRQ);
     t0 = msx2ProfClock();
     z80Cycles += t0 - t1;
 #endif
