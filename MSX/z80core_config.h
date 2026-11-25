@@ -15,10 +15,10 @@ void OutZ80(uint16_t port, uint8_t value);
 
 #define Z80CORE_OP(a) (op_map[(a) >> 13][(a) & 0x1FFF])
 #define Z80CORE_RD(a) ({ const uint8_t *pr_ = msx1_rd_map[(a) >> 13]; uint8_t vr_; \
-  if (__builtin_expect(pr_ != 0, 1)) vr_ = pr_[(a) & 0x1FFF]; else { Z80CORE_SYNC_OUT(); vr_ = RdZ80Slow(a); Z80CORE_SYNC_IN(); } vr_; })
+  if (__builtin_expect(pr_ != 0, 1)) vr_ = pr_[(a) & 0x1FFF]; else { Z80CORE_SYNC_OUT_MEM(); vr_ = RdZ80Slow(a); Z80CORE_SYNC_IN_MEM(); } vr_; })
 #define Z80CORE_WR(a, v) do { uint8_t *pw_ = msx1_wr_map[(a) >> 13]; \
   if (__builtin_expect(pw_ != 0 && (a) != 0xFFFF, 1)) pw_[(a) & 0x1FFF] = (v); \
-  else { Z80CORE_SYNC_OUT(); WrZ80Slow((a), (v)); Z80CORE_SYNC_IN(); } } while (0)
+  else { Z80CORE_SYNC_OUT_MEM(); WrZ80Slow((a), (v)); Z80CORE_SYNC_IN_MEM(); } } while (0)
 #define Z80CORE_IN(p) ({ Z80CORE_SYNC_OUT(); const uint8_t vi_ = InZ80(p); Z80CORE_SYNC_IN(); vi_; })
 #define Z80CORE_OUT(p, v) do { Z80CORE_SYNC_OUT(); OutZ80((p), (v)); Z80CORE_SYNC_IN(); } while (0)
 #define Z80CORE_M1_WAIT 1

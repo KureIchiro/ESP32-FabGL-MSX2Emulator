@@ -80,8 +80,13 @@ static const uint8_t r8off[8] = {
 };
 #define R8P(n) ((uint8_t *)z + r8off[n])
 
-#define Z80CORE_SYNC_OUT() (z->icount = cyc)
-#define Z80CORE_SYNC_IN()  (cyc = z->icount)
+#define Z80CORE_R_OUT() ((void)0)
+#define Z80CORE_R_IN() ((void)0)
+#define Z80CORE_EV() ((void)0)
+#define Z80CORE_SYNC_OUT() (z->icount = cyc, Z80CORE_R_OUT())
+#define Z80CORE_SYNC_IN()  (cyc = z->icount, Z80CORE_R_IN(), Z80CORE_EV())
+#define Z80CORE_SYNC_OUT_MEM() (z->icount = cyc)
+#define Z80CORE_SYNC_IN_MEM() (cyc = z->icount)
 #if defined(__has_include)
 #if __has_include("z80core_config.h")
 #include "z80core_config.h"
@@ -89,14 +94,14 @@ static const uint8_t r8off[8] = {
 #endif
 #ifndef Z80CORE_RD
 #define Z80CORE_RD(a) ({ const uint8_t *p_ = z->rpage[(a) >> 13]; uint8_t v_; \
-  if (__builtin_expect(p_ != 0, 1)) v_ = p_[(a) & 0x1FFF]; else { Z80CORE_SYNC_OUT(); v_ = z->read(z, (a)); Z80CORE_SYNC_IN(); } v_; })
+  if (__builtin_expect(p_ != 0, 1)) v_ = p_[(a) & 0x1FFF]; else { Z80CORE_SYNC_OUT_MEM(); v_ = z->read(z, (a)); Z80CORE_SYNC_IN_MEM(); } v_; })
 #endif
 #ifndef Z80CORE_OP
 #define Z80CORE_OP(a) Z80CORE_RD(a)
 #endif
 #ifndef Z80CORE_WR
 #define Z80CORE_WR(a, v) do { uint8_t *p_ = z->wpage[(a) >> 13]; \
-  if (__builtin_expect(p_ != 0, 1)) p_[(a) & 0x1FFF] = (v); else { Z80CORE_SYNC_OUT(); z->write(z, (a), (v)); Z80CORE_SYNC_IN(); } } while (0)
+  if (__builtin_expect(p_ != 0, 1)) p_[(a) & 0x1FFF] = (v); else { Z80CORE_SYNC_OUT_MEM(); z->write(z, (a), (v)); Z80CORE_SYNC_IN_MEM(); } } while (0)
 #endif
 #ifndef Z80CORE_IN
 #define Z80CORE_IN(p) ({ Z80CORE_SYNC_OUT(); const uint8_t v_ = z->in(z, (p)); Z80CORE_SYNC_IN(); v_; })
@@ -125,6 +130,17 @@ static const uint8_t r8off[8] = {
 #ifndef Z80CORE_ED_ATTR
 #define Z80CORE_ED_ATTR __attribute__((noinline))
 #endif
+#ifndef Z80CORE_EV_GATE
+#define Z80CORE_EV_GATE 1
+#endif
+#ifndef Z80CORE_ALU_CALL
+#define Z80CORE_ALU_CALL 0
+#endif
+#if Z80CORE_ALU_CALL
+#define ALU_FN static __attribute__((noinline)) Z80_FAST
+#else
+#define ALU_FN static inline Z80_FAST
+#endif
 
 #define RD8(addr) ({ const uint16_t ad_ = (uint16_t)(addr); Z80CORE_RD(ad_); })
 #define WR8(addr, val) do { const uint16_t ad_ = (uint16_t)(addr); const uint8_t vd_ = (uint8_t)(val); Z80CORE_WR(ad_, vd_); } while (0)
@@ -137,31 +153,31 @@ static const uint8_t r8off[8] = {
 #define PUSH16(val) do { const uint16_t vv_ = (uint16_t)(val); RSP -= 2; WR8((uint16_t)(RSP + 1), vv_ >> 8); WR8(RSP, vv_ & 0xFF); } while (0)
 #define POP16() ({ const uint16_t lo_ = RD8(RSP); const uint16_t hi_ = RD8((uint16_t)(RSP + 1)); RSP += 2; (uint16_t)(lo_ | (hi_ << 8)); })
 
-static inline void alu_add(z80_t *z, uint8_t v)
+ALU_FN void alu_add(z80_t *z, uint8_t v)
 {
   const unsigned a = RA, r = a + v;
   RF = (uint8_t)(sz53[r & 0xFF] | ((r >> 8) & CF) | ((a ^ v ^ r) & HF) | (((a ^ ~v) & (a ^ r) & 0x80) >> 5));
   RA = (uint8_t)r;
 }
-static inline void alu_adc(z80_t *z, uint8_t v)
+ALU_FN void alu_adc(z80_t *z, uint8_t v)
 {
   const unsigned a = RA, r = a + v + (RF & CF);
   RF = (uint8_t)(sz53[r & 0xFF] | ((r >> 8) & CF) | ((a ^ v ^ r) & HF) | (((a ^ ~v) & (a ^ r) & 0x80) >> 5));
   RA = (uint8_t)r;
 }
-static inline void alu_sub(z80_t *z, uint8_t v)
+ALU_FN void alu_sub(z80_t *z, uint8_t v)
 {
   const unsigned a = RA, r = a - v;
   RF = (uint8_t)(sz53[r & 0xFF] | ((r >> 8) & CF) | NF | ((a ^ v ^ r) & HF) | (((a ^ v) & (a ^ r) & 0x80) >> 5));
   RA = (uint8_t)r;
 }
-static inline void alu_sbc(z80_t *z, uint8_t v)
+ALU_FN void alu_sbc(z80_t *z, uint8_t v)
 {
   const unsigned a = RA, r = a - v - (RF & CF);
   RF = (uint8_t)(sz53[r & 0xFF] | ((r >> 8) & CF) | NF | ((a ^ v ^ r) & HF) | (((a ^ v) & (a ^ r) & 0x80) >> 5));
   RA = (uint8_t)r;
 }
-static inline void alu_cp(z80_t *z, uint8_t v)
+ALU_FN void alu_cp(z80_t *z, uint8_t v)
 {
   const unsigned a = RA, r = a - v;
   RF = (uint8_t)((sz53[r & 0xFF] & (SF | ZF)) | (v & (YF | XF)) | ((r >> 8) & CF) | NF | ((a ^ v ^ r) & HF) |
@@ -216,7 +232,7 @@ static inline void alu_daa(z80_t *z)
   RF = (uint8_t)(sz53p[r] | (RF & NF) | h | c);
   RA = r;
 }
-static inline uint8_t cb_rot(z80_t *z, int y, uint8_t v)
+static inline Z80_FAST uint8_t cb_rot(z80_t *z, int y, uint8_t v)
 {
   uint8_t r, c;
   switch (y) {
@@ -404,11 +420,19 @@ static void Z80CORE_ED_ATTR ed_exec(z80_t *z, uint8_t op)
   z->icount = cyc;
 }
 
+#undef Z80CORE_R_OUT
+#undef Z80CORE_R_IN
+#undef Z80CORE_EV
+#define Z80CORE_R_OUT() (z->r = rr)
+#define Z80CORE_R_IN() (rr = z->r)
+#define Z80CORE_EV() (ev = 1)
 int Z80_FAST z80core_run(z80_t *z, int cycles)
 {
   uint16_t pc = z->pc.w;
   int cyc = cycles;
   uint8_t op;
+  uint8_t rr = z->r;
+  int ev = 1;
   z80_pair_t *xy;
 
   if (z->ei_delay) {
@@ -416,12 +440,14 @@ int Z80_FAST z80core_run(z80_t *z, int cycles)
     if (cyc > 0) goto no_int;
   }
   while (cyc > 0) {
+    if (__builtin_expect(ev, 0) || !Z80CORE_EV_GATE) {
+    ev = 0;
     if (__builtin_expect((z->irq | z->nmi) != 0, 0)) {
       if (z->nmi) {
         z->nmi = 0;
         z->halted = 0;
         z->iff1 = 0;
-        z->r++;
+        rr++;
         cyc -= 11;
         PUSH16(pc);
         pc = 0x0066;
@@ -434,7 +460,7 @@ int Z80_FAST z80core_run(z80_t *z, int cycles)
         if (v >= 0) {
           z->halted = 0;
           z->iff1 = z->iff2 = 0;
-          z->r++;
+          rr++;
           if (z->irq_autoclear) z->irq = 0;
           if (z->im == 2) {
             cyc -= 19;
@@ -454,12 +480,14 @@ int Z80_FAST z80core_run(z80_t *z, int cycles)
   no_int:
     if (__builtin_expect(z->halted, 0)) {
       const int n = (cyc + 3 + Z80CORE_M1_WAIT) / (4 + Z80CORE_M1_WAIT);
-      z->r = (uint8_t)(z->r + n);
+      rr = (uint8_t)(rr + n);
       cyc -= n * (4 + Z80CORE_M1_WAIT);
+      ev = 1;
       continue;
     }
+    }
     op = FETCH8();
-    z->r++;
+    rr++;
     cyc -= Z80CORE_M1_WAIT;
 
 exec_main:
@@ -717,16 +745,18 @@ exec_main:
     case 0x76:
       cyc -= 4;
       z->halted = 1;
+      ev = 1;
       continue;
     case 0xFB:
       cyc -= 4;
       z->iff1 = z->iff2 = 1;
       Z80CORE_EI();
+      ev = 1;
       goto no_int;
     case 0xCB: {
       const uint8_t o = FETCH8();
       const int y = (o >> 3) & 7, n = o & 7;
-      z->r++;
+      rr++;
       cyc -= Z80CORE_M1_WAIT;
       if (n == 6) {
         cyc -= ((o & 0xC0) == 0x40) ? 12 : 15;
@@ -751,13 +781,41 @@ exec_main:
     }
     case 0xED:
       op = FETCH8();
-      z->r++;
+      rr++;
       cyc -= Z80CORE_M1_WAIT;
+      if ((op & 0xF7) == 0xB0) {
+        const uint16_t step = (op & 0x08) ? 0xFFFF : 1;
+        for (;;) {
+          cyc -= 16;
+          const uint8_t v = RD8(RHL);
+          WR8(RDE, v);
+          RHL = (uint16_t)(RHL + step);
+          RDE = (uint16_t)(RDE + step);
+          RBC--;
+          const uint8_t n = (uint8_t)(v + RA);
+          RF = (RF & (SF | ZF | CF)) | (RBC ? PF : 0) | (n & XF) | ((n & 0x02) << 4);
+          if (!RBC)
+            break;
+          cyc -= 5;
+          RWZ = (uint16_t)(pc - 1);
+          if (cyc <= 0 || ev) {
+            pc = (uint16_t)(pc - 2);
+            break;
+          }
+          rr = (uint8_t)(rr + 2);
+          cyc -= 2 * Z80CORE_M1_WAIT;
+        }
+        continue;
+      }
       z->pc.w = pc;
       z->icount = cyc;
+      z->r = rr;
       ed_exec(z, op);
       pc = z->pc.w;
       cyc = z->icount;
+      rr = z->r;
+      if ((op & 0xC6) == 0x40 || (op & 0xC7) == 0x45 || (op & 0xE6) == 0xA2)
+        ev = 1;
       continue;
     case 0xDD:
       xy = &z->ix;
@@ -864,7 +922,7 @@ exec_main:
 
   prefix:
     op = FETCH8();
-    z->r++;
+    rr++;
     cyc -= Z80CORE_M1_WAIT;
     if (op == 0xDD) { cyc -= 4; xy = &z->ix; goto prefix; }
     if (op == 0xFD) { cyc -= 4; xy = &z->iy; goto prefix; }
@@ -896,6 +954,7 @@ exec_main:
 done:
   z->pc.w = pc;
   z->icount = cyc;
+  z->r = rr;
   return cyc;
 }
 
