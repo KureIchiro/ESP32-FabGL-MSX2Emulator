@@ -128,6 +128,8 @@ Cart carts[3];
 
 #define DISK_IF_MEMORY_MAPPED
 
+#define SOUND_RATE 32768
+
 // TTGO VGA32
 #define SD_SCLK 14
 #define SD_MISO 2
@@ -199,7 +201,7 @@ int fmpacSlot = 0;
 volatile uint32_t fmpacSramWrites;
 
 fabgl::VGAController DisplayController;
-fabgl::SoundGenerator soundGenerator;
+fabgl::SoundGenerator soundGenerator(SOUND_RATE);
 fabgl::NoiseWaveformGenerator noiseGen;
 fabgl::Mouse Mouse;
 fabgl::PS2Controller PS2Controller;
@@ -263,7 +265,7 @@ uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_v[] = { 0, 0, 0, 0, 0, 0 };
 uint8_t scc_enable;
 bool psg2scc = false;
-static const int BUFFER_SIZE = 256;
+static const int BUFFER_SIZE = 256 * SOUND_RATE / 16384;
 const uint8_t SCC_VOL_TABLE[16] = {
   0, 2, 4, 7, 10, 15, 21, 26, 33, 39, 47, 54, 62, 68, 73, 75
 };
@@ -421,7 +423,7 @@ public:
       phaseInc = 0;
     } else {
       uint32_t freqHz = 111860 / (freq + 1);
-      phaseInc = (uint32_t)(freqHz << 18);
+      phaseInc = (uint32_t)(((uint64_t)freqHz << 32) / SOUND_RATE);
     }
     curVol = vol;
     memcpy(waveform, newWave, 32);
@@ -552,7 +554,7 @@ public:
     if (rate > 0) {
       tickStep = (uint32_t)(((uint64_t)psgClock << 16) / rate);
     } else {
-      tickStep = (uint32_t)(((uint64_t)psgClock << 16) / 16384);
+      tickStep = (uint32_t)(((uint64_t)psgClock << 16) / SOUND_RATE);
     }
   }
 
@@ -1415,14 +1417,14 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext,
     int shownTop = -1, shownCursor = -1;
     auto drawItem = [&](int idx) {
       int y = 27 + (idx - topIndex) * 9;
-      uiFillRect(56, y - 1, 319, y + 7, UI_BLUE);
+      uiFillRect(24, y - 1, 319, y + 7, UI_BLUE);
       if (idx < 0 || idx >= (int)items.size()) return;
       const Item &it = items[idx];
       bool plain = it.kind == K_FILE || it.kind == K_EXTRA;
       String label = plain ? it.name : it.name + "/";
       if (label.length() > 32) label = label.substring(0, 32);
       uint8_t fg = (idx == cursor) ? UI_YELLOW : (plain ? UI_WHITE : UI_CYAN);
-      uiText(64, y, label.c_str(), fg, UI_BLUE);
+      uiText(32, y, label.c_str(), fg, UI_BLUE);
     };
 
     while (!changeDir) {
@@ -1431,10 +1433,10 @@ String showFileSelector(const char* title, const char* dirPath, const char* ext,
         if (cursor >= topIndex + maxRows) topIndex = cursor - maxRows + 1;
         if (shownTop < 0) {
           uiFillRect(0, 0, 319, 199, UI_BLUE);
-          uiText(48, 5, title, UI_WHITE, UI_BLUE);
+          uiText(16, 5, title, UI_WHITE, UI_BLUE);
           String shown = path + "/";
           if (shown.length() > 34) shown = "..." + shown.substring(shown.length() - 31);
-          uiText(48, 15, shown.c_str(), UI_CYAN, UI_BLUE);
+          uiText(16, 15, shown.c_str(), UI_CYAN, UI_BLUE);
         }
         if (shownTop < 0 || topIndex != shownTop) {
           for (int i = 0; i < maxRows; ++i) drawItem(topIndex + i);
@@ -1978,8 +1980,8 @@ private:
   int16_t sampleBuffer[BUFFER_SIZE];
   volatile int head = 0, tail = 0;
   int lastSample = 0;
-  static const int LP_SHIFT = 2;
-  static const int FM_SHIFT = 6;
+  static const int LP_SHIFT = SOUND_RATE >= 32768 ? 3 : 2;
+  static const int FM_SHIFT = 5;
   static const int FM_CLIP = 250;
   int32_t lpState = 0;
   struct FMCommand { uint8_t adr, val; };
@@ -1989,7 +1991,7 @@ private:
 
 public:
   volatile bool touched = false;
-  YM2413Generator() { opll = OPLL_new(3579545, 16384); }
+  YM2413Generator() { opll = OPLL_new(3579545, SOUND_RATE); }
   void writePort(uint8_t isData, uint8_t val) {
     touched = true;
     int n = (cmdHead + 1) % CMD_QUEUE_SIZE;
@@ -2083,11 +2085,6 @@ static bool loadFmPac(int s) {
     pf.close();
   }
   cartInsert(s, rom, rs, MAPPER_FMPAC);
-  if (!fmGen) {
-    fmGen = new YM2413Generator();
-    soundGenerator.attach(fmGen);
-    fmGen->enable(true);
-  }
   Serial.printf("Slot %d: FM-PAC (%u bytes)\n", s, (unsigned)size);
   return true;
 }
@@ -2320,7 +2317,6 @@ void setup() {
   }
 
   soundGenerator.setVolume(64);
-  soundGenerator.play(true);
   psgGen.enable(true);
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
@@ -2346,6 +2342,11 @@ void setup() {
     bool hasDiskRom = false;
 #endif
     bool hasFmPac = SD.exists(SD_ROOT "/FMPAC.ROM");
+    if (hasFmPac) {
+      fmGen = new YM2413Generator();
+      soundGenerator.attach(fmGen);
+      fmGen->enable(true);
+    }
     bootSlot[1] = hasFmPac ? ITEM_FMPAC : "";
     loadJoyKey();
     Serial1.begin(115200, SERIAL_8N1, 39, -1);
@@ -2408,6 +2409,8 @@ void setup() {
   ssr3 = 0;
   updateMemoryMap();
 
+  soundGenerator.play(true);
+
   z80core_init(&cpu);
   cpu.sp.w = 0xF380;
   cpu.af.b.h = 0x00;
@@ -2415,8 +2418,7 @@ void setup() {
   vpClearRows(0, 199);
   displayMode = DisplayMode::GAME;
 
-  xTaskCreatePinnedToCore(cpuTask, "cpuTask", 8192, NULL, 24, NULL, 0);
-
+ xTaskCreatePinnedToCore(cpuTask, "cpuTask", 4096, NULL, 24, NULL, 0);
   Serial.println("MSX Booting with Dual Core...");
   Serial.end();
   Serial1.begin(115200, SERIAL_8N1, 39, -1);

@@ -24,6 +24,7 @@ typedef struct __OPLL_SLOT {
 
   int32_t output[2];
 
+  uint16_t *wave_table;
   uint32_t pg_phase;
   uint32_t pg_out;
   uint8_t pg_keep;
@@ -59,12 +60,15 @@ typedef struct __OPLL_SLOT {
 
 typedef struct __OPLL_RateConv {
   int ch;
-  float timer;
-  float f_ratio;
+  double f_ratio;
+  uint32_t timer;
+  uint32_t timer_step;
+  int16_t *sinc_table;
   int16_t **buf;
+  int *pos;
 } OPLL_RateConv;
 
-OPLL_RateConv *OPLL_RateConv_new(float f_inp, float f_out, int ch);
+OPLL_RateConv *OPLL_RateConv_new(double f_inp, double f_out, int ch);
 void OPLL_RateConv_reset(OPLL_RateConv *conv);
 void OPLL_RateConv_putData(OPLL_RateConv *conv, int ch, int16_t data);
 int16_t OPLL_RateConv_getData(OPLL_RateConv *conv, int ch);
@@ -73,27 +77,39 @@ void OPLL_RateConv_delete(OPLL_RateConv *conv);
 typedef struct __OPLL {
   uint32_t clk;
   uint32_t rate;
+
   uint8_t chip_type;
+
   uint32_t adr;
-  float inp_step;
-  float out_step;
-  float out_time;
+
+  uint32_t inp_step;
+  uint32_t out_step;
+  uint32_t out_time;
+  int inp_shift;
+  uint32_t inp_recip;
+
   uint8_t reg[0x40];
   uint8_t test_flag;
   uint32_t slot_key_status;
   uint8_t rhythm_mode;
+
   uint32_t eg_counter;
-  uint8_t phase_mult;
+
   uint32_t pm_phase;
   int32_t am_phase;
+
   uint8_t lfo_am;
+
   uint32_t noise;
   uint8_t short_noise;
+
   int32_t patch_number[9];
   OPLL_SLOT slot[18];
   OPLL_PATCH patch[19 * 2];
+
   uint8_t pan[16];
-  float pan_fine[16][2];
+  int32_t pan_fine[16][2];
+
   uint32_t mask;
 
   int16_t ch_out[14];
@@ -122,8 +138,6 @@ void OPLL_setChipType(OPLL *opll, uint8_t type);
 void OPLL_writeIO(OPLL *opll, uint32_t reg, uint8_t val);
 void OPLL_writeReg(OPLL *opll, uint32_t reg, uint8_t val);
 
-void OPLL_advance(OPLL *opll);
-
 int16_t OPLL_calc(OPLL *opll);
 
 void OPLL_calcStereo(OPLL *opll, int32_t out[2]);
@@ -140,6 +154,9 @@ void OPLL_getDefaultPatch(int32_t type, int32_t num, OPLL_PATCH *);
 uint32_t OPLL_setMask(OPLL *, uint32_t mask);
 
 uint32_t OPLL_toggleMask(OPLL *, uint32_t mask);
+
+int OPLL_save_state(OPLL *opll, uint8_t *out);
+void OPLL_load_state(OPLL *opll, const uint8_t *in, int size);
 
 #define OPLL_set_rate OPLL_setRate
 #define OPLL_set_quality OPLL_setQuality

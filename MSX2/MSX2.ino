@@ -118,6 +118,8 @@
 // #define SD_MOSI 2
 // #define SD_CS   13
 
+#define SOUND_RATE 32768
+
 #define MSX2_FULLHD 0
 #define MSX2_WIDE_MONITOR 0
 #if MSX2_WIDE_MONITOR == 2
@@ -149,7 +151,7 @@ static bool mouseOn = false;
 static int mousePortSel = 0;
 
 fabgl::VGAController DisplayController;
-fabgl::SoundGenerator soundGenerator;
+fabgl::SoundGenerator soundGenerator(SOUND_RATE);
 fabgl::PS2Controller PS2Controller;
 
 static void printHeap(const char *tag) {
@@ -241,7 +243,7 @@ static void timedStatus(const char *msg, int ms) {
   if (!statusClearAt) statusClearAt = 1;
 }
 
-static const int BUFFER_SIZE = 256;
+static const int BUFFER_SIZE = 256 * SOUND_RATE / 16384;
 
 int8_t scc_waveform[5][32] = { 0 };
 uint16_t scc_f[] = { 0, 0, 0, 0, 0, 0 };
@@ -283,7 +285,7 @@ public:
   }
   void setFrequency(int value) override {}
   void updateParams(int8_t *newWave, uint32_t freq, uint8_t vol) {
-    phaseInc = freq ? (uint32_t)((111860 / (freq + 1)) << 18) : 0;
+    phaseInc = freq ? (uint32_t)(((uint64_t)(111860 / (freq + 1)) << 32) / SOUND_RATE) : 0;
     curVol = vol;
     memcpy(waveform, newWave, 32);
   }
@@ -368,7 +370,7 @@ public:
   }
   void setSampleRate(int rate) {
     this->fabgl::WaveformGenerator::setSampleRate(rate);
-    tickStep = (uint32_t)(((uint64_t)psgClock << 16) / (rate > 0 ? rate : 16384));
+    tickStep = (uint32_t)(((uint64_t)psgClock << 16) / (rate > 0 ? rate : SOUND_RATE));
   }
 
 private:
@@ -435,8 +437,8 @@ private:
   int16_t sampleBuffer[BUFFER_SIZE];
   volatile int head = 0, tail = 0;
   int lastSample = 0;
-  static const int LP_SHIFT = 2;
-  static const int FM_SHIFT = 6;
+  static const int LP_SHIFT = SOUND_RATE >= 32768 ? 3 : 2;
+  static const int FM_SHIFT = 5;
   static const int FM_CLIP  = 250;
   int32_t lpState = 0;
   struct FMCommand { uint8_t adr, val; };
@@ -446,7 +448,7 @@ private:
 
 public:
   volatile bool touched = false;
-  YM2413Generator() { opll = OPLL_new(3579545, 16384); }
+  YM2413Generator() { opll = OPLL_new(3579545, SOUND_RATE); }
   void writePort(uint8_t isData, uint8_t val) {
     touched = true;
     int n = (cmdHead + 1) % CMD_QUEUE_SIZE;
