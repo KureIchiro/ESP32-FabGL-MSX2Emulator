@@ -301,6 +301,9 @@ uint8_t slot_reg = 0;
 
 struct tms9918a* vdp;
 volatile bool frameReady = false;
+#if TMS_VBLANK_192
+static volatile uint8_t rasterState = 0;
+#endif
 bool displayEnabled = true;
 static const fabgl::RGB888 msx_palette[16] = {
   { 0x00, 0x00, 0x00 },
@@ -1264,6 +1267,9 @@ void syncPSRAMtoGame(int idx) {
   vdp->framebuffer = tmp_framebuffer;
   vdp->active_raster = tmp_active_raster;
   vdp->visible_raster = tmp_visible_raster;
+#if TMS_VBLANK_192
+  tms9918a_vram_changed(vdp);
+#endif
   for (int i = 0; i < 16; i++) {
     vdp->colourmap[i] = 0xC0 |
                         ((msx_palette[i].B >> 6) << 4) |
@@ -2085,6 +2091,11 @@ static bool loadFmPac(int s) {
     pf.close();
   }
   cartInsert(s, rom, rs, MAPPER_FMPAC);
+  if (!fmGen) {
+    fmGen = new YM2413Generator();
+    soundGenerator.attach(fmGen);
+    fmGen->enable(true);
+  }
   Serial.printf("Slot %d: FM-PAC (%u bytes)\n", s, (unsigned)size);
   return true;
 }
@@ -2140,11 +2151,24 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
     nextFrameTime += frameTimeUs;
 
     for (int i = 0; i < 262; ++i) {
+#if TMS_VBLANK_192
+      if (i == 192) {
+        const bool snap = rasterState == 0;
+        tms9918a_vblank(vdp, snap);
+        if (snap) rasterState = 1;
+        frameReady = true;
+        if (tms9918a_irq_pending(vdp) && cpu.iff1) {
+          z80core_int(&cpu, 0xFF);
+        }
+      }
+#endif
       fdcLines++;
       z80core_run(&cpu, CPU_CYCLE_M1WAIT);
+#if !TMS_VBLANK_192
       if (i == 192) {
         frameReady = true;
       }
+#endif
       if (tms9918a_irq_pending(vdp) && cpu.iff1) {
         z80core_int(&cpu, 0xFF);
       }
@@ -2287,6 +2311,11 @@ void setup() {
   printHeap("after slots");
 
   vdp = tms9918a_create();
+#if TMS_VBLANK_192
+  Serial.printf("VRAM snapshot: %s\n", vdp->rvram == vdp->framebuffer ? "none (drawing reads VRAM directly)" :
+                ((uintptr_t)vdp->rvram >= 0x3F800000 && (uintptr_t)vdp->rvram < 0x3FC00000) ? "PSRAM" : "internal");
+  printHeap("after VDP");
+#endif
   tms9918a_reset(vdp);
   vdp->active_raster = vdp->rasterbuffer0;
   vdp->visible_raster = vdp->rasterbuffer1;
@@ -2317,6 +2346,7 @@ void setup() {
   }
 
   soundGenerator.setVolume(64);
+  soundGenerator.play(true);
   psgGen.enable(true);
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
@@ -2444,9 +2474,19 @@ void loop() {
   if (frameReady) {
     frameReady = false;
     if (!isPaused) {
+#if TMS_VBLANK_192
+      if (rasterState == 1) {
+        rasterState = 2;
+        tms9918a_rasterize(vdp);
+        flip_buffer(vdp);
+        rasterState = 0;
+        if (displayMode == DisplayMode::GAME) presentGameFrame();
+      }
+#else
       tms9918a_rasterize(vdp);
       flip_buffer(vdp);
       if (displayMode == DisplayMode::GAME) presentGameFrame();
+#endif
     }
     updateAllSound();
     joyKeysApply(joyKeyState, mousePort != 0, msx_key_matrix);

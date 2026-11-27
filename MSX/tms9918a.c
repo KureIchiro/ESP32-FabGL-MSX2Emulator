@@ -5,8 +5,8 @@
 #include <esp_attr.h>
 #include <string.h>
 #include "tms9918a.h"
-#ifndef BOARD_HAS_PSRAM
 #include <esp_heap_caps.h>
+#ifndef BOARD_HAS_PSRAM
 #define ps_malloc(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #endif
 
@@ -17,6 +17,9 @@
 #endif
 
 uint8_t sram_framebuffer[16384] DRAM_ATTR __attribute__((aligned(4)));
+#if TMS_VBLANK_192
+void tms9918a_vram_changed(struct tms9918a *vdp);
+#endif
 
 static inline uint32_t expand_bits_to_color(uint8_t nibble, uint8_t color) {
 	uint32_t res = 0;
@@ -44,7 +47,7 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 	int x = sprat[1];
 	if (sprat[3] & 0x80) x -= 32;
 
-	int mag = vdp->reg[1] & 0x01;
+	int mag = vdp->rreg[1] & 0x01;
 	int real_width = mag ? (width << 1) : width;
 	uint8_t foreground = vdp->colourmap[sprat[3] & 0x0F];
 
@@ -112,22 +115,22 @@ static IRAM_ATTR void tms9918a_render_slice(struct tms9918a *vdp, int y, uint8_t
 	}
 }
 
-TMS_INLINE uint16_t tms9918a_sprite_bits(struct tms9918a *vdp, int y, const uint8_t *sprat, const uint8_t *spdat) {
+TMS_INLINE uint16_t tms9918a_sprite_bits(const uint8_t *reg, int y, const uint8_t *sprat, const uint8_t *spdat) {
 	int row = *sprat;
 	if (row > 0xE0)
 		row -= 0x100;
 	row += 1;
 	row = y - row;
-	if (vdp->reg[1] & 0x01)
+	if (reg[1] & 0x01)
 		row >>= 1;
-	if ((vdp->reg[1] & 0x02) == 0)
+	if ((reg[1] & 0x02) == 0)
 		return (uint16_t)(spdat[row] << 8);
 	return (uint16_t)((spdat[row] << 8) | spdat[row + 16]);
 }
 
 static IRAM_ATTR void tms9918a_render_sprite(struct tms9918a *vdp, int y, uint8_t *sprat, uint8_t *spdat) {
-	unsigned int width = (vdp->reg[1] & 0x02) ? 16 : 8;
-	tms9918a_render_slice(vdp, y, sprat, tms9918a_sprite_bits(vdp, y, sprat, spdat), width);
+	unsigned int width = (vdp->rreg[1] & 0x02) ? 16 : 8;
+	tms9918a_render_slice(vdp, y, sprat, tms9918a_sprite_bits(vdp->rreg, y, sprat, spdat), width);
 }
 
 TMS_INLINE uint32_t tms9918a_sprite_mask(uint16_t bits, int mag) {
@@ -142,9 +145,9 @@ TMS_INLINE uint32_t tms9918a_sprite_mask(uint16_t bits, int mag) {
 
 void prepare_sprites(struct tms9918a *vdp) {
 	memset(vdp->sprite_line_count, 0, 192);
-	uint8_t *sprat = vdp->framebuffer + ((vdp->reg[5] & 0x7F) << 7);
-	int spheight = vdp->reg[1] & 0x02 ? 16 : 8;
-	int mag = vdp->reg[1] & 0x01;
+	uint8_t *sprat = vdp->rvram + ((vdp->rreg[5] & 0x7F) << 7);
+	int spheight = vdp->rreg[1] & 0x02 ? 16 : 8;
+	int mag = vdp->rreg[1] & 0x01;
 	if (mag) spheight <<= 1;
 
 	for (int i = 0; i < 32; i++) {
@@ -165,26 +168,29 @@ void prepare_sprites(struct tms9918a *vdp) {
 }
 
 static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
-	uint8_t *sprat_base = vdp->framebuffer + ((vdp->reg[5] & 0x7F) << 7);
-	uint8_t *spdat = vdp->framebuffer + ((vdp->reg[6] & 0x07) << 11);
+	uint8_t *sprat_base = vdp->rvram + ((vdp->rreg[5] & 0x7F) << 7);
+	uint8_t *spdat = vdp->rvram + ((vdp->rreg[6] & 0x07) << 11);
 	unsigned int spshft = 3;
 
-	uint8_t patMask = (vdp->reg[1] & 0x02) ? 0xFC : 0xFF;
+	uint8_t patMask = (vdp->rreg[1] & 0x02) ? 0xFC : 0xFF;
 
 	int count = vdp->sprite_line_count[y];
 
 	if (vdp->limit_sprites && count > 4) {
+#if !TMS_VBLANK_192
 		if (!(vdp->status & 0x40))
 			vdp->status = (vdp->status & 0xA0) | 0x40 | (vdp->sprite_line_list[y][4] & 0x1F);
+#endif
 		count = 4;
 	}
 
+#if !TMS_VBLANK_192
 	if (count > 1 && !(vdp->status & 0x20)) {
 		uint32_t occ[9] = { 0 };
-		int mag = vdp->reg[1] & 0x01;
+		int mag = vdp->rreg[1] & 0x01;
 		for (int n = 0; n < count; n++) {
 			const uint8_t *sprat = sprat_base + vdp->sprite_line_list[y][n] * 4;
-			uint32_t m = tms9918a_sprite_mask(tms9918a_sprite_bits(vdp, y, sprat, spdat + ((sprat[2] & patMask) << spshft)), mag);
+			uint32_t m = tms9918a_sprite_mask(tms9918a_sprite_bits(vdp->rreg, y, sprat, spdat + ((sprat[2] & patMask) << spshft)), mag);
 			int x = sprat[1] - ((sprat[3] & 0x80) ? 32 : 0);
 			if (x < 0) { m = (x <= -32) ? 0 : (m << -x); x = 0; }
 			else if (x > 224) m &= ~(0xFFFFFFFFu >> (256 - x));
@@ -194,6 +200,7 @@ static IRAM_ATTR void tms9918a_sprite_line(struct tms9918a *vdp, int y) {
 			occ[w] |= p0; occ[w + 1] |= p1;
 		}
 	}
+#endif
 
 	for (int n = count - 1; n >= 0; n--) {
 		uint8_t i = vdp->sprite_line_list[y][n];
@@ -215,9 +222,9 @@ static IRAM_ATTR void tms9918a_raster_sprites(struct tms9918a *vdp) {
 }
 
 static void IRAM_ATTR tms9918a_rasterize_g1(struct tms9918a *vdp) {
-	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
-	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
-	uint8_t *colour = vdp->framebuffer + (vdp->reg[3] << 6);
+	uint8_t *p_base = vdp->rvram + ((vdp->rreg[2] & 0x0F) << 10);
+	uint8_t *pattern = vdp->rvram + ((vdp->rreg[4] & 0x07) << 11);
+	uint8_t *colour = vdp->rvram + (vdp->rreg[3] << 6);
 	uint8_t *out = vdp->active_raster;
 
 	for (int char_row = 0; char_row < 24; char_row++) {
@@ -239,9 +246,9 @@ static void IRAM_ATTR tms9918a_rasterize_g1(struct tms9918a *vdp) {
 }
 
 static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
-	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
-	uint8_t *pattern0 = vdp->framebuffer + ((vdp->reg[4] & 0x04) << 11);
-	uint8_t *colour0 = vdp->framebuffer + ((vdp->reg[3] & 0x80) << 6);
+	uint8_t *p_base = vdp->rvram + ((vdp->rreg[2] & 0x0F) << 10);
+	uint8_t *pattern0 = vdp->rvram + ((vdp->rreg[4] & 0x04) << 11);
+	uint8_t *colour0 = vdp->rvram + ((vdp->rreg[3] & 0x80) << 6);
 	uint8_t *out = vdp->active_raster;
 
 	for (int char_row = 0; char_row < 24; char_row++) {
@@ -249,11 +256,11 @@ static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 		uint8_t *colour = colour0;
 
 		if (char_row >= 8 && char_row < 16) {
-			if (vdp->reg[4] & 0x01) pattern += 0x0800;
-			if (vdp->reg[3] & 0x20) colour += 0x0800;
+			if (vdp->rreg[4] & 0x01) pattern += 0x0800;
+			if (vdp->rreg[3] & 0x20) colour += 0x0800;
 		} else if (char_row >= 16) {
-			if (vdp->reg[4] & 0x02) pattern += 0x1000;
-			if (vdp->reg[3] & 0x40) colour += 0x1000;
+			if (vdp->rreg[4] & 0x02) pattern += 0x1000;
+			if (vdp->rreg[3] & 0x40) colour += 0x1000;
 		}
 
 		for (int scanline = 0; scanline < 8; scanline++) {
@@ -274,8 +281,8 @@ static IRAM_ATTR void tms9918a_rasterize_g2(struct tms9918a *vdp) {
 }
 
 static void IRAM_ATTR tms9918a_rasterize_mc(struct tms9918a *vdp) {
-	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
-	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
+	uint8_t *p_base = vdp->rvram + ((vdp->rreg[2] & 0x0F) << 10);
+	uint8_t *pattern = vdp->rvram + ((vdp->rreg[4] & 0x07) << 11);
 	uint8_t *out = vdp->active_raster;
 
 	for (int char_row = 0; char_row < 24; char_row++) {
@@ -301,11 +308,11 @@ static void IRAM_ATTR tms9918a_rasterize_mc(struct tms9918a *vdp) {
 }
 
 static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
-	uint8_t *p_base = vdp->framebuffer + ((vdp->reg[2] & 0x0F) << 10);
-	uint8_t *pattern = vdp->framebuffer + ((vdp->reg[4] & 0x07) << 11);
+	uint8_t *p_base = vdp->rvram + ((vdp->rreg[2] & 0x0F) << 10);
+	uint8_t *pattern = vdp->rvram + ((vdp->rreg[4] & 0x07) << 11);
 	uint8_t *out = vdp->active_raster;
-	uint8_t bg = vdp->colourmap[vdp->reg[7] & 0x0F];
-	uint8_t fg = vdp->colourmap[vdp->reg[7] >> 4];
+	uint8_t bg = vdp->colourmap[vdp->rreg[7] & 0x0F];
+	uint8_t fg = vdp->colourmap[vdp->rreg[7] >> 4];
 	uint8_t c_arr[2] = { bg, fg };
 	uint32_t bg_block = bg | (bg << 8) | (bg << 16) | (bg << 24);
 
@@ -342,11 +349,11 @@ static void IRAM_ATTR tms9918a_rasterize_text(struct tms9918a *vdp) {
 
 void IRAM_ATTR tms9918a_rasterize(struct tms9918a *vdp) {
 	prepare_sprites(vdp);
-	unsigned int mode = (vdp->reg[1] >> 2) & 0x06;
-	mode |= (vdp->reg[0] & 0x02) >> 1;
+	unsigned int mode = (vdp->rreg[1] >> 2) & 0x06;
+	mode |= (vdp->rreg[0] & 0x02) >> 1;
 
-	uint8_t backdrop = vdp->colourmap[vdp->reg[7] & 0x0F];
-	if ((vdp->reg[1] & 0x40) == 0)
+	uint8_t backdrop = vdp->colourmap[vdp->rreg[7] & 0x0F];
+	if ((vdp->rreg[1] & 0x40) == 0)
 		memset(vdp->active_raster, backdrop, 256 * 192);
 	else {
 		switch (mode) {
@@ -357,13 +364,19 @@ void IRAM_ATTR tms9918a_rasterize(struct tms9918a *vdp) {
 			default: memset(vdp->active_raster, backdrop, 256 * 192);
 		}
 	}
+#if !TMS_VBLANK_192
 	vdp->status |= 0x80;
+#endif
 }
 
 void IRAM_ATTR tms9918a_write(struct tms9918a *vdp, uint8_t addr, uint8_t val) {
 	switch (addr & 1) {
 		case 0:
 			vdp->framebuffer[vdp->addr] = val;
+#if TMS_VBLANK_192
+			if (vdp->addr < vdp->dirty_lo) vdp->dirty_lo = vdp->addr;
+			if (vdp->addr > vdp->dirty_hi) vdp->dirty_hi = vdp->addr;
+#endif
 			vdp->addr++;
 			vdp->addr &= vdp->memmask;
 			vdp->latch = 0;
@@ -423,6 +436,16 @@ struct tms9918a *tms9918a_create(void) {
 		vdp->framebuffer = sram_framebuffer;
 		vdp->memmask = 0x3FFF;
 		vdp->limit_sprites = 1;
+#if TMS_VBLANK_192
+		vdp->rreg = vdp->rreg_buf;
+		vdp->rvram = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+		if (!vdp->rvram) vdp->rvram = (uint8_t *)ps_malloc(16384);
+		if (!vdp->rvram) vdp->rvram = vdp->framebuffer;
+		tms9918a_vram_changed(vdp);
+#else
+		vdp->rreg = vdp->reg;
+		vdp->rvram = vdp->framebuffer;
+#endif
 	}
 	return vdp;
 }
@@ -441,3 +464,72 @@ void IRAM_ATTR flip_buffer(struct tms9918a *vdp) {
 		vdp->active_raster = vdp->rasterbuffer0;
 	}
 }
+#if TMS_VBLANK_192
+
+void tms9918a_vram_changed(struct tms9918a *vdp) {
+	vdp->dirty_lo = 0;
+	vdp->dirty_hi = 0x3FFF;
+}
+
+static void tms9918a_sprite_status(struct tms9918a *vdp) {
+	const uint8_t *reg = vdp->reg;
+	const uint8_t *vram = vdp->framebuffer;
+	const unsigned int mode = ((reg[1] >> 2) & 0x06) | ((reg[0] & 0x02) >> 1);
+	if (!(reg[1] & 0x40) || mode > 2) return;
+	if ((vdp->status & 0x60) == 0x60) return;
+	const uint8_t *sprat_base = vram + ((reg[5] & 0x7F) << 7);
+	const uint8_t *spdat = vram + ((reg[6] & 0x07) << 11);
+	const uint8_t patMask = (reg[1] & 0x02) ? 0xFC : 0xFF;
+	const int mag = reg[1] & 0x01;
+	int spheight = (reg[1] & 0x02) ? 16 : 8;
+	if (mag) spheight <<= 1;
+	int ys[32], n = 0;
+	for (; n < 32; n++) {
+		int ypos = sprat_base[n * 4];
+		if (ypos == 0xD0) break;
+		if (ypos > 0xE0) ypos -= 256;
+		ys[n] = ypos + 1;
+	}
+	if (n == 0) return;
+	for (int y = 0; y < 192; y++) {
+		uint8_t list[32];
+		int count = 0;
+		for (int i = 0; i < n; i++)
+			if ((unsigned)(y - ys[i]) < (unsigned)spheight) list[count++] = (uint8_t)i;
+		if (count < 2) continue;
+		if (vdp->limit_sprites && count > 4) {
+			if (!(vdp->status & 0x40))
+				vdp->status = (vdp->status & 0xA0) | 0x40 | (list[4] & 0x1F);
+			count = 4;
+		}
+		if (!(vdp->status & 0x20)) {
+			uint32_t occ[9] = { 0 };
+			for (int k = 0; k < count; k++) {
+				const uint8_t *sprat = sprat_base + list[k] * 4;
+				uint32_t m = tms9918a_sprite_mask(tms9918a_sprite_bits(reg, y, sprat, spdat + ((sprat[2] & patMask) << 3)), mag);
+				int x = sprat[1] - ((sprat[3] & 0x80) ? 32 : 0);
+				if (x < 0) { m = (x <= -32) ? 0 : (m << -x); x = 0; }
+				else if (x > 224) m &= ~(0xFFFFFFFFu >> (256 - x));
+				uint32_t w = (uint32_t)x >> 5, sh = (uint32_t)x & 31;
+				uint32_t p0 = m >> sh, p1 = sh ? m << (32 - sh) : 0;
+				if ((p0 & occ[w]) | (p1 & occ[w + 1])) { vdp->status |= 0x20; break; }
+				occ[w] |= p0; occ[w + 1] |= p1;
+			}
+		}
+		if ((vdp->status & 0x60) == 0x60) return;
+	}
+}
+
+void tms9918a_vblank(struct tms9918a *vdp, int snapshot) {
+	tms9918a_sprite_status(vdp);
+	if (snapshot) {
+		memcpy(vdp->rreg_buf, vdp->reg, 8);
+		if (vdp->rvram != vdp->framebuffer && vdp->dirty_lo <= vdp->dirty_hi) {
+			memcpy(vdp->rvram + vdp->dirty_lo, vdp->framebuffer + vdp->dirty_lo, vdp->dirty_hi - vdp->dirty_lo + 1);
+			vdp->dirty_lo = 0xFFFF;
+			vdp->dirty_hi = 0;
+		}
+	}
+	vdp->status |= 0x80;
+}
+#endif
