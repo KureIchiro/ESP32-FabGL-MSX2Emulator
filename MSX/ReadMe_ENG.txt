@@ -101,6 +101,7 @@ System-related operations must be performed while the emulator is in a Paused st
 
 [5-4. Real-time Settings (Adjustable during gameplay)]
 
+* [F6]: Cycle through Z80 speed (Normal(228) -> High(300) -> Super(400))
 * [F8]: Toggle SCC Mode (PSG Only / PSG + SCC)
 Enables preset wave-table sound even for non-SCC games.
 * Do not use this with software that already supports SCC.
@@ -179,6 +180,7 @@ The following keys are used to control the emulator functions:
 * Shift + F10   : Permanently save current state to SD Card
 * F9            : Disk Image (.DSK) swap menu
 * Shift + F9    : Save changes from RAM back to the .DSK file on SD Card
+* F6            : Cycle Z80 speed (Normal / High / Super)
 * F8            : Force SCC Sound ON/OFF (Toggle)
 * Shift + F8    : Disable Horizontal Sprite Limit (Max 4 per line)
 

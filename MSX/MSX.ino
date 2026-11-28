@@ -218,6 +218,10 @@ uint8_t* psram_slots[5] = { NULL, NULL, NULL, NULL, NULL };
 const size_t SAVE_BUFFER_SIZE = 100 * 1024;
 StateSaveData tempState;
 bool isPaused = false;
+static volatile int cpuCyclesPerLine = 228;
+static const int CPU_SPEEDS[3] = { 228, 300, 400 };
+static const char *const CPU_SPEED_NAMES[3] = { "CPU: Normal", "CPU: High", "CPU: Super" };
+static int cpuSpeed = 0;
 enum class SaveMode { NONE,
                       GAME_TO_PSRAM,
                       PSRAM_TO_GAME,
@@ -1835,6 +1839,9 @@ void updateKeyboard() {
         f6_held = true;
         if (isShift) {
         } else {
+          cpuSpeed = (cpuSpeed + 1) % 3;
+          cpuCyclesPerLine = CPU_SPEEDS[cpuSpeed];
+          flashStatus(CPU_SPEED_NAMES[cpuSpeed], 500);
         }
       } else if (isBreak) f6_held = false;
     } else if (sc == 0x83) {
@@ -2129,9 +2136,6 @@ static void updateMouse() {
   }
 }
 
-#define CPU_CYCLE_M1WAIT 205
-#define CPU_CYCLE_NOWAIT 228
-
 void IRAM_ATTR cpuTask(void* pvParameters) {
   const int64_t frameTimeUs = 16684;
   int64_t nextFrameTime = esp_timer_get_time();
@@ -2163,7 +2167,7 @@ void IRAM_ATTR cpuTask(void* pvParameters) {
       }
 #endif
       fdcLines++;
-      z80core_run(&cpu, CPU_CYCLE_M1WAIT);
+      z80core_run(&cpu, cpuCyclesPerLine);
 #if !TMS_VBLANK_192
       if (i == 192) {
         frameReady = true;

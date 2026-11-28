@@ -208,16 +208,16 @@ ROMマッパーは自動判別しません。以下の識別子（半角）を�
 | Shift + F11（一時停止中） | クイックセーブ（1〜5を選ぶ） | **ドライブ2（B:）**のディスクをSDへ書き戻し |
 | F8 | PSGをSCCの波形で鳴らす ON / OFF | 同じ |
 | Shift + F8 | スプライトの横の枚数制限（4個）を外す / 戻す | 同じ（スプライトモード1 は4個、モード2 は8個の制限） |
-| F6 | なし | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） |
+| F6 | Z80の速さ Normal → High → Super → Normal（画面下に0.5秒表示） | 同じ |
 
 - **MSX1 と MSX2+ の違い（注意）**
    - ディスクの入れ替えは、MSX1 が **F9**（ドライブ1のみ）、MSX2+ が **F10（ドライブ1）・F11（ドライブ2）** です。
    - F10・F11 は、MSX1 ではステートセーブ、MSX2+ ではディスクの入れ替えです（MSX2+ にステートセーブはありません）。
-   - F6（Z80の速さ）は MSX2+ のみです。
+   - F6（Z80の速さ）は MSX1 と MSX2+ の両方で有効です。
 - ※ディスクの書き戻しにライトプロテクト機能はありません。オリジナルデータは別途保管してください。
 - ※SCC対応ソフトの実行中は F8 を使わないでください。
 - ※Shift + F8 を ON にすると、5枚目（MSX2+ のスプライトモード2 では9枚目）の検出が止まります（MSX1 は衝突検出も止まります）。不具合が出る場合は OFF にしてください。
-- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 205 = 実機相当、High 285、Super 365）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
+- ※F6 の速さは 1ライン（約63.6µs）に実行する Z80 のクロック数です（Normal 228 = 実機相当、High 300、Super 400）。処理落ちするゲームを速くしたいときに使います。速いとタイミングに頼るソフトが正しく動かないことがあります。
 
 ### 画面の設定（MSX2+。MSX2.ino）
 
@@ -550,16 +550,16 @@ The boot menu and the file selector can also be operated with the port 1 control
 | Shift + F11 (paused) | Quick save (select 1-5) | Write **drive 2 (B:)** back to the SD card |
 | F8 | PSG played with SCC waveforms ON / OFF | same |
 | Shift + F8 | Remove / restore the horizontal sprite limit (4 per line) | same (limit is 4 in sprite mode 1 and 8 in sprite mode 2) |
-| F6 | - | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) |
+| F6 | Z80 speed Normal → High → Super → Normal (shown for 0.5 s at the bottom) | same |
 
 - **Differences between MSX1 and MSX2+ (note)**
    - Disk swapping is **F9** (drive 1 only) on MSX1, and **F10 (drive 1) / F11 (drive 2)** on MSX2+.
    - F10 / F11 are state save keys on MSX1 and disk swap keys on MSX2+ (MSX2+ has no state save).
-   - F6 (Z80 speed) is MSX2+ only.
+   - F6 (Z80 speed) is available on both MSX1 and MSX2+.
 - There is no write-protect for disk write-back. Please keep backups of your original data.
 - Do not use F8 with software that already supports SCC.
 - Shift + F8 disables the 5th-sprite detection (9th sprite in MSX2+ sprite mode 2); on MSX1 it also disables collision detection. Turn it off if it causes glitches.
-- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 205 (real speed), High 285, Super 365. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
+- The F6 speed is the number of Z80 clocks executed per scan line (about 63.6 µs): Normal 228 (real speed), High 300, Super 400. Use it to speed up games that slow down; software that depends on timing may misbehave at higher speeds.
 
 ### Display Settings (MSX2+, MSX2.ino)
 

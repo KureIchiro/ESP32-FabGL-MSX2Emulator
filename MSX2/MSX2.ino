@@ -53,7 +53,7 @@
  *   (K) コナミ(SCCあり/なし両用)  (KS) コナミSCC(実機どおりのアドレスのみ。メタルギア2など)
  *  実行中: F12 一時停止 / Shift+F12 リセット / 一時停止中に F10・F11 でドライブ1・2のディスク
  *   入れ替え(Shift で書き戻し) / F8 PSGをSCC波形で鳴らす / Shift+F8 スプライトの横の枚数制限なし・あり /
- *   F6 Z80 の速さ Normal(205) → High(285) → Super(365)(1ラインのクロック数。画面下に0.5秒表示)
+ *   F6 Z80 の速さ Normal(228) → High(300) → Super(400)(1ラインのクロック数。画面下に0.5秒表示)
  *   ※ドライブ2は起動メニューで DiskB を選んで起動したときだけつながる(実機の HB-F1XDJ と
  *     同じく、選ばなければ1ドライブで、B: は A: を使う仮想ドライブになる)
  */
@@ -938,7 +938,7 @@ static void bootMenu(BootConfig &c, bool hasDiskRom, bool hasFmPac) {
 static volatile bool isPaused = false;
 static volatile bool frameReady = false;
 
-static const int CPU_SPEEDS[3] = { 205, 285, 365 };
+static const int CPU_SPEEDS[3] = { 228, 300, 400 };
 static const char *const CPU_SPEED_NAMES[3] = { "CPU: Normal", "CPU: High", "CPU: Super" };
 static int cpuSpeed = 0;
 
